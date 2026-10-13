@@ -12,7 +12,7 @@
 (async () => {
   if (window.LinwoodCards) return;
   const REPO = 'ergoat48/linwood-cards', BRANCH = 'deployed';
-  const FALLBACK = '97bc2d46a8b79e5d900525e3428563a6129b4016';
+  const FALLBACK = '7bbb2c6ebad5b8e0a0ed4bbcd91f960288429f76';
   const TTL = 120000, SHA = /^[0-9a-f]{40}$/;
   const state = (window.LinwoodCards = { repo: REPO, sha: null, via: null, ref: null, files: null, error: null });
   const get = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
