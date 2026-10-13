@@ -1,0 +1,12 @@
+{
+  "name": "linwood-cards",
+  "private": true,
+  "type": "module",
+  "description": "Custom Lovelace cards for the Linwood Home Assistant dashboards",
+  "scripts": {
+    "check": "bash tools/check.sh"
+  },
+  "devDependencies": {
+    "@happy-dom/global-registrator": "^15.11.7"
+  }
+}

@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 fail=0
 
 echo "== syntax"
-for f in src/*.js retired/*.js; do
+for f in src/*.js loader/*.js retired/*.js tools/*.mjs; do
   node --check "$f" || { echo "  syntax error: $f"; fail=1; }
 done
 python3 -m py_compile scripts/*.py || fail=1

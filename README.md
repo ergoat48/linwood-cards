@@ -1,7 +1,39 @@
 # Linwood cards
 
 Custom Lovelace cards for the Linwood Home Assistant dashboards. This repo is the source of truth for the card code;
-Home Assistant loads it as dashboard resources.
+Home Assistant loads it straight from here.
+
+## How a change reaches the dashboards
+
+```
+edit src/ → push to main → CI: syntax + secret scan + gitleaks + smoke test → `deployed` branch moves → next dashboard load
+```
+
+1. Edit a file in `src/` and bump the version line in its header comment.
+2. Optional locally: `npm run check` and `node tools/smoke.mjs` (after `npm ci`).
+3. Push to `main` (or merge a PR). CI runs the checks; if they all pass, it moves the `deployed` branch to that commit.
+   If anything fails, `deployed` stays where it was and nothing changes at home.
+4. Dashboards pick it up on their next load — within about 2 minutes. On the phone, pull to refresh or reopen the app.
+
+**Roll back:** GitHub → Actions → *check and deploy* → *Run workflow*, paste an older commit SHA.
+**Try a branch on one device** before merging — in that browser's console:
+`localStorage.setItem('linwood-cards-ref', 'my-branch')` (or a full SHA), then reload. `localStorage.removeItem('linwood-cards-ref')` to go back.
+**What's loaded on this device:** `window.LinwoodCards` in the console (also logged on load).
+
+### How it works
+
+Home Assistant has a single Linwood resource: the loader (`loader/linwood-loader.js`, stored inline in HA). On each
+dashboard load it asks GitHub which commit `deployed` points to (at most every 2 minutes per device), then imports
+`src/index.js` from jsDelivr at that exact commit; `index.js` loads every card. Because files are fetched by commit
+SHA, every device runs one consistent set, and jsDelivr / browsers can cache them permanently.
+
+- No Home Assistant token or URL is stored in GitHub, and Home Assistant doesn't need to be reachable from the internet.
+  The only write access CI uses is GitHub's own per-run token, scoped to moving the `deployed` branch.
+- If GitHub can't be reached, the loader reuses the last commit that device loaded (then the commit from when the loader
+  was installed). If a commit fails to load, it falls back to the last good one.
+- Cards need internet for a device's first load of a new commit; after that they're cached.
+- Adding a card: put the file in `src/` and add one line to `src/index.js`. No change in Home Assistant.
+- The loader itself rarely changes. If it does, update the inline resource in HA (`resources.json` has its id).
 
 ## What's here
 
@@ -16,34 +48,11 @@ Home Assistant loads it as dashboard resources.
 | `src/linwood-plant-card.js` | 3.6.0 | plant care tracker + grow lights card |
 | `src/linwood-jump-bar.js` | 1.0.0 | jump-to chips on the Plant Care view |
 | `src/linwood-shell.js` | 1.3.3 | sidebar room navigation / styling |
+| `src/index.js` | — | list of cards the loader brings in |
+| `loader/linwood-loader.js` | 1.0.0 | the one resource installed in Home Assistant |
 | `scripts/denon_signal.py` | — | feeds `sensor.theater_av_signal` (command_line sensor) for the Theater format badges |
-| `retired/` | — | Plant Art and Safe Area add-ons — both now built into Plant Card 3.6.0 and stand down on their own |
-
-`resources.json` maps each file to its Home Assistant resource id.
-
-## Making a change
-
-1. Edit the file in `src/` and bump the version line in its header comment.
-2. `bash tools/check.sh` — syntax check plus the secret scan (must print `OK`).
-3. Commit and push. CI repeats the check and runs gitleaks over the full history.
-4. Deploy (below).
-
-## Deploying to Home Assistant
-
-The repo is public, so jsDelivr can serve any commit. Point each resource at a **commit SHA** (not a branch), which
-is immutable, so phones never mix an old and a new file:
-
-```
-https://cdn.jsdelivr.net/gh/ergoat48/linwood-cards@<commit-sha>/src/linwood-plant-card.js
-```
-
-A deploy is just updating that resource's URL to the new SHA (resource ids are in `resources.json`), then a refresh
-in the app. Before switching, the resources are inline code inside Home Assistant; inline resources cap at about
-128 KB, which is why the deployed Plant Card is a minified build. From the CDN it can load unminified.
-
-Trade-off: cards then load from jsDelivr, so the dashboard needs internet access to fetch them on first load (browsers
-and the iOS app cache them afterwards). If that matters, the same files can be copied to `/config/www/` and loaded from
-`/local/` instead.
+| `tools/` | — | `check.sh` (syntax + secret scan), `smoke.mjs` (loads every card in a simulated browser) |
+| `retired/` | — | Plant Art and Safe Area add-ons, now built into Plant Card 3.6.0 |
 
 ## Not in this repo (on purpose)
 

@@ -1,7 +1,25 @@
-name: check
-on: [push, pull_request]
+name: check and deploy
+# Every push and PR: syntax + secret scan, gitleaks over history, and a smoke test that loads every card.
+# Push to main that passes: the `deployed` branch moves to that commit. Home Assistant's Linwood Loader follows
+# `deployed`, so dashboards pick the change up on their next load (within ~2 minutes).
+# Roll back: Actions › "check and deploy" › Run workflow, give a commit SHA (blank = current main).
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Commit to deploy (blank = current main). Use an older SHA to roll back.
+        required: false
+
 permissions:
   contents: read
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -9,6 +27,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ inputs.sha || github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -18,3 +37,29 @@ jobs:
         run: |
           curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz | tar xz gitleaks
           ./gitleaks detect --source . --redact --verbose
+      - name: Smoke test (load every card)
+        run: |
+          if [ ! -f tools/smoke.mjs ]; then echo "No smoke test in this commit (pre-pipeline) — skipped"; exit 0; fi
+          npm ci --no-audit --no-fund
+          node tools/smoke.mjs
+
+  deploy:
+    needs: check
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # only to move the `deployed` branch; nothing else in this job can write
+    steps:
+      - name: Move `deployed` to this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ inputs.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          SHA=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}" --jq .sha)
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/deployed" >/dev/null 2>&1; then
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/heads/deployed" -f sha="$SHA" -F force=true >/dev/null
+          else
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" -f ref=refs/heads/deployed -f sha="$SHA" >/dev/null
+          fi
+          echo "Deployed ${SHA:0:7} — dashboards load it on their next refresh." | tee -a "$GITHUB_STEP_SUMMARY"
