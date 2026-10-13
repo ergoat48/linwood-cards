@@ -27,7 +27,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ inputs.sha || github.sha }}
+      - name: Switch to the requested commit (manual deploy / rollback)
+        if: inputs.sha != ''
+        env:
+          SHA: ${{ inputs.sha }}
+        run: git checkout --detach "$SHA"   # short or full SHA
       - uses: actions/setup-node@v4
         with:
           node-version: 20
