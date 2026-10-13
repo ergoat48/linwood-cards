@@ -1,0 +1,7 @@
+# Never commit Home Assistant config secrets or local tooling
+secrets.yaml
+*.secret*
+.env
+.env.*
+node_modules/
+.DS_Store
