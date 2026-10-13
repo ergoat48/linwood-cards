@@ -1,4 +1,5 @@
-/* Linwood Plant Card v3.6.0 — illustrated plant-care tracker for the Plant Care page.
+/* Linwood Plant Card v3.6.1 — illustrated plant-care tracker for the Plant Care page.
+ * v3.6.1: history range switch gains a 12 h view (ticks every 2 h); range buttons tighten on phones to fit.
  * v3.6.0: watering log for soil plants. A plant with `watering:` gets a Watering row — Watered, Still moist, log
  *         another date (10 s undo), how long since the last watering and a strip of the days between recent
  *         waterings. Once `learn` gaps are logged (default 3, so 4 waterings) the plant's typical dry-down time is the
@@ -555,7 +556,7 @@ window.LinwoodPlantSummary = (hass) => {
 };
 
 /* ---------- humidifier popup: history parsing + chart maths ---------- */
-const LPC_HX_RANGES = [[3, '3 h'], [24, '24 h'], [72, '3 days'], [168, '7 days']];
+const LPC_HX_RANGES = [[3, '3 h'], [12, '12 h'], [24, '24 h'], [72, '3 days'], [168, '7 days']];
 /* HA history rows, compressed (s / lc / lu, epoch seconds) or full (state / last_changed) */
 const lpcHxRows = (rows, numeric) => {
   const out = [];
@@ -1189,13 +1190,13 @@ class LinwoodPlantCard extends HTMLElement {
     const grid = [];
     for (let v = y0 + step; v < y1 - step / 10; v += step) grid.push(v);
     const pct = (v) => f1((Y(v) / H) * 100);
-    /* time ticks: every 6 h for a day, midnights for longer ranges */
-    const ticks = [], tk = new Date(t0);
-    if (x.range <= 24) { tk.setMinutes(0, 0, 0); const hs = x.range <= 6 ? 1 : 6; tk.setHours(Math.ceil(tk.getHours() / hs) * hs); } else { tk.setHours(24, 0, 0, 0); }
+    /* time ticks: hourly up to 6 h, every 2 h up to 12 h, every 6 h for a day, midnights for longer ranges */
+    const ticks = [], tk = new Date(t0), hs = x.range <= 6 ? 1 : x.range <= 12 ? 2 : 6;
+    if (x.range <= 24) { tk.setMinutes(0, 0, 0); tk.setHours(Math.ceil(tk.getHours() / hs) * hs); } else { tk.setHours(24, 0, 0, 0); }
     for (let g = 0; g < 12 && tk.getTime() < t1; g++) {
       const t = tk.getTime();
       if (t > t0) ticks.push({ t, l: x.range <= 24 ? tk.toLocaleTimeString(undefined, x.range <= 6 ? { hour: 'numeric', minute: '2-digit' } : { hour: 'numeric' }) : tk.toLocaleDateString(undefined, { weekday: 'short' }) });
-      if (x.range <= 24) tk.setHours(tk.getHours() + (x.range <= 6 ? 1 : 6)); else tk.setDate(tk.getDate() + 1);
+      if (x.range <= 24) tk.setHours(tk.getHours() + hs); else tk.setDate(tk.getDate() + 1);
     }
     const band = o.band ? [Math.max(o.band[0], y0), Math.min(o.band[1], y1)] : null;
     const spans = (o.spans || []).map(([a, b]) => `<rect class="on" x="${f1(X(a))}" y="0" width="${f1(Math.max(1.5, X(b) - X(a)))}" height="${H}"/><rect class="onb" x="${f1(X(a))}" y="${H - 5}" width="${f1(Math.max(1.5, X(b) - X(a)))}" height="5"/>`).join('');
@@ -1606,6 +1607,7 @@ dialog.hx[open] { animation:hxin .22s cubic-bezier(.2,.8,.2,1); }
   .hxsw, .hxau { padding:10px 11px; gap:9px; }
   .hxpw { width:38px; height:38px; }
   .hxp { height:130px; }
+  .hxr button { padding:6px 9px; }
 }
 @keyframes hxin { from { opacity:0; transform:translateY(12px) scale(.98); } }
 @media (prefers-reduced-motion: reduce) { dialog.hx[open], .hxsk { animation:none; } }

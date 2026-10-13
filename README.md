@@ -48,7 +48,7 @@ SHA, every device runs one consistent set, and jsDelivr / browsers can cache the
 | `src/linwood-tv-card.js` | 1.0.1 | bedroom: LG G4, Sonos soundbar, Apple TV |
 | `src/linwood-climate-card.js` | 1.2.0 | dial thermostat |
 | `src/linwood-calendar-card.js` | 1.1.0 | week strip + agenda |
-| `src/linwood-plant-card.js` | 3.6.0 | plant care tracker + grow lights card |
+| `src/linwood-plant-card.js` | 3.6.1 | plant care tracker + grow lights card |
 | `src/linwood-jump-bar.js` | 1.0.0 | jump-to chips on the Plant Care view |
 | `src/linwood-shell.js` | 1.4.0 | sidebar room navigation / styling |
 | `src/index.js` | — | list of cards the loader brings in |
