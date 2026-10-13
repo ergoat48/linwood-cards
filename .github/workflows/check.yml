@@ -60,10 +60,11 @@ jobs:
           SHA: ${{ inputs.sha || github.sha }}
         run: |
           set -euo pipefail
-          SHA=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}" --jq .sha)
+          api() { local out; out=$(gh api "$@" 2>&1) || { echo "::error title=deploy failed::${out//$'\n'/ }"; exit 1; }; printf '%s' "$out"; }
+          SHA=$(api "repos/${GITHUB_REPOSITORY}/commits/${SHA}" --jq .sha)
           if gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/deployed" >/dev/null 2>&1; then
-            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/heads/deployed" -f sha="$SHA" -F force=true >/dev/null
+            api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/heads/deployed" -f sha="$SHA" -F force=true >/dev/null
           else
-            gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" -f ref=refs/heads/deployed -f sha="$SHA" >/dev/null
+            api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" -f ref=refs/heads/deployed -f sha="$SHA" >/dev/null
           fi
           echo "Deployed ${SHA:0:7} — dashboards load it on their next refresh." | tee -a "$GITHUB_STEP_SUMMARY"
