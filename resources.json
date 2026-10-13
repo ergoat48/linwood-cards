@@ -2,7 +2,7 @@
   "_comment": "What Home Assistant has installed (Settings > Dashboards > Resources). Only the loader lives in HA; the cards it loads are listed in src/index.js.",
   "repo": "ergoat48/linwood-cards",
   "ha_resources": [
-    { "file": "loader/linwood-loader.js", "ha_id": "49a6736c62f344efa7de1074fadd8040", "version": "1.0.0", "type": "module", "storage": "inline",
+    { "file": "loader/linwood-loader.js", "ha_id": "49a6736c62f344efa7de1074fadd8040", "version": "1.1.0", "type": "module", "storage": "inline",
       "note": "Rarely changes. If you edit it, update this HA resource with the new file content." }
   ],
   "removed_from_ha_2026_10_13": {

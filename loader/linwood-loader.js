@@ -1,6 +1,7 @@
-/* Linwood Loader v1.0.0 — the only Linwood resource in Home Assistant (Settings › Dashboards › Resources, inline).
- * Loads the Linwood cards from github.com/ergoat48/linwood-cards at the commit the `deployed` branch points to.
- * CI moves `deployed` only after a push to main passes its checks, so a broken commit never reaches the dashboard.
+/* Linwood Loader v1.1.0 — the only Linwood resource in Home Assistant (Settings › Dashboards › Resources, inline).
+ * Loads the Linwood cards from github.com/ergoat48/linwood-cards at the commit named in DEPLOYED on the `deployed`
+ * branch. CI writes it only after a push to main passes its checks, so a broken commit never reaches the dashboard.
+ * v1.1.0: reads the DEPLOYED file (a forward-only deploy log) instead of the branch tip, so rollbacks work.
  * The commit is fetched by its SHA from jsDelivr, so every device gets one consistent set of files.
  *
  * Resolving the commit: asks GitHub at most every 2 minutes per device; if GitHub can't be reached it reuses the last
@@ -26,8 +27,11 @@
     if (c && c.ref === ref && SHA.test(c.sha) && Date.now() - c.t < TTL) return [c.sha, 'cached'];
     try {
       const ctl = new AbortController(), tm = setTimeout(() => ctl.abort(), 3000);
-      const r = await fetch(`https://api.github.com/repos/${REPO}/commits/${encodeURIComponent(ref)}`, {
-        headers: { Accept: 'application/vnd.github.sha' }, cache: 'no-store', signal: ctl.signal,
+      // `deployed` → the commit CI recorded in DEPLOYED; any other branch (device override) → that branch's tip
+      const r = await fetch(ref === BRANCH
+        ? `https://api.github.com/repos/${REPO}/contents/DEPLOYED?ref=${BRANCH}`
+        : `https://api.github.com/repos/${REPO}/commits/${encodeURIComponent(ref)}`, {
+        headers: { Accept: ref === BRANCH ? 'application/vnd.github.raw+json' : 'application/vnd.github.sha' }, cache: 'no-store', signal: ctl.signal,
       });
       clearTimeout(tm);
       const sha = r.ok ? (await r.text()).trim() : '';

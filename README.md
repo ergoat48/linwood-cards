@@ -6,16 +6,18 @@ Home Assistant loads it straight from here.
 ## How a change reaches the dashboards
 
 ```
-edit src/ → push to main → CI: syntax + secret scan + gitleaks + smoke test → `deployed` branch moves → next dashboard load
+edit src/ → push to main → CI: syntax + secret scan + gitleaks + smoke test → commit recorded in DEPLOYED → next dashboard load
 ```
 
 1. Edit a file in `src/` and bump the version line in its header comment.
 2. Optional locally: `npm run check` and `node tools/smoke.mjs` (after `npm ci`).
-3. Push to `main` (or merge a PR). CI runs the checks; if they all pass, it moves the `deployed` branch to that commit.
-   If anything fails, `deployed` stays where it was and nothing changes at home.
+3. Push to `main` (or merge a PR). CI runs the checks; if they all pass, it records that commit in the `DEPLOYED` file
+   on the `deployed` branch. If anything fails, nothing is recorded and nothing changes at home.
 4. Dashboards pick it up on their next load — within about 2 minutes. On the phone, pull to refresh or reopen the app.
 
-**Roll back:** GitHub → Actions → *check and deploy* → *Run workflow*, paste an older commit SHA.
+**Roll back:** GitHub → Actions → *check and deploy* → *Run workflow*, paste an older commit SHA (short is fine).
+Leave it blank to redeploy current `main`.
+**Deploy history:** the commit log of the `deployed` branch — one "Deploy abc1234 (was def5678)" commit per deploy.
 **Try a branch on one device** before merging — in that browser's console:
 `localStorage.setItem('linwood-cards-ref', 'my-branch')` (or a full SHA), then reload. `localStorage.removeItem('linwood-cards-ref')` to go back.
 **What's loaded on this device:** `window.LinwoodCards` in the console (also logged on load).
@@ -23,12 +25,13 @@ edit src/ → push to main → CI: syntax + secret scan + gitleaks + smoke test 
 ### How it works
 
 Home Assistant has a single Linwood resource: the loader (`loader/linwood-loader.js`, stored inline in HA). On each
-dashboard load it asks GitHub which commit `deployed` points to (at most every 2 minutes per device), then imports
+dashboard load it reads `DEPLOYED` from the `deployed` branch (at most every 2 minutes per device), then imports
 `src/index.js` from jsDelivr at that exact commit; `index.js` loads every card. Because files are fetched by commit
 SHA, every device runs one consistent set, and jsDelivr / browsers can cache them permanently.
 
 - No Home Assistant token or URL is stored in GitHub, and Home Assistant doesn't need to be reachable from the internet.
-  The only write access CI uses is GitHub's own per-run token, scoped to moving the `deployed` branch.
+  The only write access CI uses is GitHub's own per-run token, used to add one commit to the `deployed` branch. That
+  branch only ever moves forward, so CI never needs permission to rewrite history or touch workflows.
 - If GitHub can't be reached, the loader reuses the last commit that device loaded (then the commit from when the loader
   was installed). If a commit fails to load, it falls back to the last good one.
 - Cards need internet for a device's first load of a new commit; after that they're cached.

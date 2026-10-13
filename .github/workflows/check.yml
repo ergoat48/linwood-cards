@@ -1,11 +1,11 @@
 name: check and deploy
 # Every push and PR: syntax + secret scan, gitleaks over history, and a smoke test that loads every card.
-# Push to main that passes: the `deployed` branch moves to that commit. Home Assistant's Linwood Loader follows
-# `deployed`, so dashboards pick the change up on their next load (within ~2 minutes).
+# Push to main that passes: the commit is written to DEPLOYED on the `deployed` branch. Home Assistant's Linwood Loader
+# reads that file, so dashboards pick the change up on their next load (within ~2 minutes).
 # Roll back: Actions › "check and deploy" › Run workflow, give a commit SHA (blank = current main).
 on:
   push:
-    branches: ['**']
+    branches: ['**', '!deployed']
   pull_request:
   workflow_dispatch:
     inputs:
@@ -54,17 +54,26 @@ jobs:
     permissions:
       contents: write   # only to move the `deployed` branch; nothing else in this job can write
     steps:
-      - name: Move `deployed` to this commit
+      # The `deployed` branch is a deploy log: each deploy (or rollback) adds a commit that writes the target SHA into
+      # DEPLOYED. It only ever moves forward, so CI never needs permission to rewind a branch.
+      - name: Record the deploy
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ inputs.sha || github.sha }}
         run: |
           set -euo pipefail
-          api() { local out; out=$(gh api "$@" 2>&1) || { echo "::error title=deploy failed::${out//$'\n'/ }"; exit 1; }; printf '%s' "$out"; }
-          SHA=$(api "repos/${GITHUB_REPOSITORY}/commits/${SHA}" --jq .sha)
-          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/deployed" >/dev/null 2>&1; then
-            api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/heads/deployed" -f sha="$SHA" -F force=true >/dev/null
-          else
-            api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" -f ref=refs/heads/deployed -f sha="$SHA" >/dev/null
+          exec 3>&1
+          api() { local out; out=$(gh api "$@" 2>&1) || { echo "::error title=deploy failed::${out//$'\n'/ }" >&3; exit 1; }; printf '%s' "$out"; }
+          R="repos/${GITHUB_REPOSITORY}"
+          SHA=$(api "$R/commits/${SHA}" --jq .sha)
+          if ! gh api "$R/git/ref/heads/deployed" >/dev/null 2>&1; then
+            api -X POST "$R/git/refs" -f ref=refs/heads/deployed -f sha="${GITHUB_SHA}" >/dev/null
           fi
+          CUR=$(gh api "$R/contents/DEPLOYED?ref=deployed" 2>/dev/null || true)
+          CUR_SHA=$(printf '%s' "$CUR" | jq -r '.sha // empty' 2>/dev/null || true)
+          CUR_VAL=$(printf '%s' "$CUR" | jq -r '.content // empty' 2>/dev/null | base64 -d 2>/dev/null | tr -d '[:space:]' || true)
+          if [ "$CUR_VAL" = "$SHA" ]; then echo "${SHA:0:7} is already deployed" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; fi
+          args=(-X PUT "$R/contents/DEPLOYED" -f branch=deployed -f message="Deploy ${SHA:0:7}${CUR_VAL:+ (was ${CUR_VAL:0:7})}" -f content="$(printf '%s\n' "$SHA" | base64 -w0)")
+          [ -n "$CUR_SHA" ] && args+=(-f sha="$CUR_SHA")
+          api "${args[@]}" >/dev/null
           echo "Deployed ${SHA:0:7} — dashboards load it on their next refresh." | tee -a "$GITHUB_STEP_SUMMARY"
