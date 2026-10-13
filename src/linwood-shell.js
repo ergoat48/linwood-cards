@@ -1,4 +1,4 @@
-/* Linwood Shell v1.3.3 — replaces the sidebar's panel list with Linwood room navigation, restyles the sidebar to match the
+/* Linwood Shell v1.4.0 — replaces the sidebar's panel list with Linwood room navigation, restyles the sidebar to match the
  * Linwood dashboard, and hides the stock dashboard toolbar (title / back arrow / edit menu) on the Linwood dashboard.
  *  - Sidebar: our <linwood-nav> is slotted into ha-sidebar's "main-navigation" slot (a supported slot in the frontend), so the
  *    native list (Overview, Map, History, HACS …) is replaced while Settings / Notifications / Profile stay untouched below.
@@ -11,11 +11,18 @@
  *    how many are on.
  *  - v1.3.3: taps inside an element carrying data-lw-jump (the Linwood Jump Bar) are intentional scrolls, so the scroll
  *    guard ignores them — otherwise it would undo every jump back up the page.
+ *  - v1.4.0: iPhone status bar. With the stock header hidden, the view's top spacing used only HA's --safe-area-inset-top,
+ *    which follows the Companion app's --app-safe-area-inset-top when the app sets one — and that can come through smaller
+ *    than the real status bar / Dynamic Island, so the top of every view slid under the clock. The spacing now uses the
+ *    larger of that variable and the browser's own env(safe-area-inset-top) (what the Jump Bar and plant popup already
+ *    trust). A frosted strip the height of the status bar also stays pinned at the top, so content scrolled up passes
+ *    under it instead of colliding with the time and battery. Desktop and edit mode are unchanged (the inset is 0 / the
+ *    stock header is back).
  * Everything is configured in NAV below.
  */
 (() => {
   if (window.__linwoodShell) return;
-  window.__linwoodShell = '1.3.3';
+  window.__linwoodShell = '1.4.0';
 
   const DASHES = ['home-v2', 'living-room'];   // dashboards that get the Linwood treatment (no stock header, Edit link in the nav)
   const BRAND = 'Linwood';
@@ -141,8 +148,12 @@ ha-list-item-button.selected::before { border-radius:14px; }
 ha-list-item-button::part(headline) { font-weight:600; }`;
   const DRAWER_CSS = `.sidebar-shell { border-inline-end:1px solid ${T.line} !important; }`;
   const ROOT_CSS = `
+:host([lw-nohdr]) { --lw-safe-top:max(var(--safe-area-inset-top, 0px), env(safe-area-inset-top, 0px)); }
 :host([lw-nohdr]) .header { display:none !important; }
-:host([lw-nohdr]) hui-view-container { padding-top:calc(var(--safe-area-inset-top, 0px) + var(--view-container-padding-top, 0px)) !important; }`;
+:host([lw-nohdr]) hui-view-container,
+:host([lw-nohdr]) hui-view-container.has-tab-bar { padding-top:calc(var(--lw-safe-top) + var(--view-container-padding-top, 0px)) !important; }
+:host([lw-nohdr])::before { content:''; position:fixed; z-index:5; top:0; left:0; right:0; height:var(--lw-safe-top); pointer-events:none;
+  background:rgba(13,15,19,0.82); -webkit-backdrop-filter:blur(14px) saturate(140%); backdrop-filter:blur(14px) saturate(140%); }`;
   const inject = (root, id, css) => {
     if (!root || root.getElementById?.(id) || root.querySelector?.(`#${id}`)) return;
     const s = document.createElement('style'); s.id = id; s.textContent = css; root.appendChild(s);

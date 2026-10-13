@@ -50,7 +50,7 @@ SHA, every device runs one consistent set, and jsDelivr / browsers can cache the
 | `src/linwood-calendar-card.js` | 1.1.0 | week strip + agenda |
 | `src/linwood-plant-card.js` | 3.6.0 | plant care tracker + grow lights card |
 | `src/linwood-jump-bar.js` | 1.0.0 | jump-to chips on the Plant Care view |
-| `src/linwood-shell.js` | 1.3.3 | sidebar room navigation / styling |
+| `src/linwood-shell.js` | 1.4.0 | sidebar room navigation / styling |
 | `src/index.js` | — | list of cards the loader brings in |
 | `loader/linwood-loader.js` | 1.0.0 | the one resource installed in Home Assistant |
 | `scripts/denon_signal.py` | — | feeds `sensor.theater_av_signal` (command_line sensor) for the Theater format badges |
