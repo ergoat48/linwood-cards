@@ -1,4 +1,6 @@
-/* Linwood Jump Bar v1.0.0 — "jump to" chips for the Plant Care view.
+/* Linwood Jump Bar v1.0.1 — "jump to" chips for the Plant Care view.
+ *  v1.0.1: the grow-lights chip lights up from each light's real state (Plant Card 3.7's LinwoodLightState), so an
+ *          RF-switched bar whose plug is always on no longer keeps it lit at night.
  *  - One chip per plant tile in linwood-plant-card (tiles carry id="lpc-<i>", Plant Card 3.6+) plus one for the
  *    linwood-grow-lights-card. Plant names and colours come from the plant card's own config, so new plants appear here
  *    automatically. A small amber dot marks a plant that needs something today (feed, water, water change, never logged).
@@ -167,7 +169,8 @@
           const lc = this._lightsCard();
           const ls = lc && lc._config && Array.isArray(lc._config.lights) ? lc._config.lights : [];
           const h = this._hass;
-          const on = h ? ls.filter((l) => h.states[l.entity] && h.states[l.entity].state === 'on').length : 0;
+          const lit = (l) => (window.LinwoodLightState ? !!(window.LinwoodLightState(h, l) || {}).on : !!h.states[l.entity] && h.states[l.entity].state === 'on');
+          const on = h ? ls.filter(lit).length : 0;
           chips.forEach((c) => {
             c.classList.toggle('lit', on > 0);
             const ic = c.querySelector('ha-icon');

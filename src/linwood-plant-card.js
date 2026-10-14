@@ -1,4 +1,10 @@
-/* Linwood Plant Card v3.6.1 — illustrated plant-care tracker for the Plant Care page.
+/* Linwood Plant Card v3.7.0 — illustrated plant-care tracker for the Plant Care page.
+ * v3.7.0: grow lights learn how they're switched. `control: rf` lights (the right mantel bar) keep their plug powered
+ *         and are turned on/off over RF, so "on" now means the bar is drawing power and plug-on-but-dark is a normal
+ *         Off. Tapping one runs its `power_script` (on/off) instead of cutting the plug; a wrong level shows a Fix
+ *         button for its `fix` script, and "Adjusting…" while either script runs. A cut plug reads "No power".
+ *         Plug lights can name a `boot_level` (the level they power up at) so their warnings say to switch them off
+ *         and on rather than use the shared remote. Grow Lights card: optional `master` switch row ("All grow lights").
  * v3.6.1: history range switch gains a 12 h view (ticks every 2 h); range buttons tighten on phones to fit.
  * v3.6.0: watering log for soil plants. A plant with `watering:` gets a Watering row — Watered, Still moist, log
  *         another date (10 s undo), how long since the last watering and a strip of the days between recent
@@ -53,6 +59,13 @@
  *     full_watts: 35                                          # draw at 100 %
  *     height: 36                                              # light face, inches above the shelf
  *     note: Own light beside the mantel                       # shown when there is no height
+ *     boot_level: 100                                         # optional: level it comes up at when its plug turns on
+ *   - id: right                                               # an RF-switched light: plug stays on, on/off over RF
+ *     entity: switch.mantle_right_grow_light                  #   its plug (must stay on so the bar hears RF)
+ *     control: rf
+ *     power: sensor.mantle_right_grow_light_power             #   required for rf: on/off is read from the draw
+ *     power_script: script.mantel_right_bar_power             #   called with variables { power: on | off }
+ *     fix: script.mantel_right_bar_fix                        #   optional: Fix button when the level is wrong
  * plants:
  *   - entity: input_datetime.plant_fed_monstera        # last feeding (a date before 2001 = never)
  *     location: input_select.plant_location_monstera  # optional
@@ -85,9 +98,11 @@
  * type: custom:linwood-grow-lights-card               # every grow light in one panel: schedule bar, toggles, watts, brightness
  * title: Grow lights
  * schedule: automation.living_room_grow_light_schedule   # optional: Auto / Paused chip (tap twice to change)
+ * master: switch.grow_lights                          # optional: "All grow lights" row that switches everything
  * on_hour: 8
  * off_hour: 20
  * lights: [ { entity, name, power, target, full_watts, height, note, plants: 'Starlight Ficus · Rubber Plant' } ]
+ *         # each light also takes control / power_script / fix / boot_level, as under grow_lights above
  */
   /* LinwoodMorph — patch live DOM to match new markup instead of replacing it (innerHTML).
    * Replacing recreated every ha-icon, which renders a frame late at zero width: the card briefly shrank and iOS
@@ -432,6 +447,11 @@ const lpcLightFor = (cfg, p) => {
 /* Brightness is remote-only, so it is read back from the plug's wattage: nearest of 25 / 50 / 75 / 100 % of the bar's full
  * draw (0 = plug on but the bar is dark). Same bands as the "Mantel Grow Light Brightness Check" automation. */
 const lpcLevel = (w, full) => { const r = w / (Number(full) || 35); return r < 0.06 ? 0 : r < 0.375 ? 25 : r < 0.625 ? 50 : r < 0.87 ? 75 : 100; };
+/* Two kinds of light:
+ *  plug (default) — the plug IS the switch: on = plug on; plug on but no draw = the light is dark when it shouldn't be.
+ *  rf             — the plug stays on so the bar can hear RF; on/off happens over RF, so on = drawing power and
+ *                   plug-on-but-dark is a normal Off. A cut plug ("No power") means it can't be switched until repowered. */
+const lpcRunning = (hass, id) => !!(id && hass && hass.states[id] && hass.states[id].state === 'on');
 const lpcLightState = (hass, l) => {
   if (!l) return null;
   const s = hass && hass.states[l.entity];
@@ -439,14 +459,36 @@ const lpcLightState = (hass, l) => {
   const pw = l.power && hass ? hass.states[l.power] : null;
   const w = pw ? parseFloat(pw.state) : NaN;
   const watts = isFinite(w) ? w : null;
-  const on = state === 'on';
+  const un = state === 'unavailable' || state === 'missing';
+  const plug = state === 'on';
+  const rf = l.control === 'rf';
+  const drawLevel = plug && watts != null ? lpcLevel(watts, l.full_watts) : null;
+  const on = rf ? (watts != null ? !!drawLevel : plug) : plug;
+  const nopower = rf && state === 'off';
+  const busy = rf && (lpcRunning(hass, l.power_script) || lpcRunning(hass, l.fix));
   const settled = !!s && Date.now() - Date.parse(s.last_changed) > 90000;      // give the plug's power reading time to catch up
-  const level = on && watts != null && l.target ? lpcLevel(watts, l.full_watts) : null;
+  // plug lights are judged whenever the plug is on (0 = dark when it shouldn't be); rf lights only while lit
+  const level = !l.target ? null : rf ? (on && watts != null ? drawLevel : null) : drawLevel;
   const ts = l.target && hass ? hass.states[l.target] : null;
   const target = ts ? parseInt(ts.state, 10) || null : null;
-  return { l, state, on, un: state === 'unavailable' || state === 'missing', watts, level, target, warn: settled && level != null && target != null && level !== target };
+  const warn = level != null && target != null && level !== target && (rf ? !busy : settled);
+  return { l, state, rf, on, un, nopower, busy, watts, level, target, warn };
 };
-const lpcLightSig = (hass, ls) => ls.map((l) => { const s = lpcLightState(hass, l); return `${s.state}${s.watts == null ? '-' : Math.round(s.watts)}${s.warn ? '!' : ''}${s.target || ''}`; }).join(',');
+/* status word + the one-line explanation shown under a light (empty when there's nothing to say) */
+const lpcLightWord = (s) => (s.un ? 'Offline' : s.nopower ? 'No power' : s.busy ? 'Adjusting' : s.on ? 'On' : 'Off');
+const lpcLightMsg = (s) => {
+  if (s.un) return 'The plug isn’t responding';
+  if (s.nopower) return 'Plug is off, so the bar can’t hear the remote — tap to power it and turn it on';
+  if (s.busy) return 'Adjusting over RF…';
+  if (!s.warn) return '';
+  const l = s.l;
+  if (s.rf) return `Reads ≈${s.level}% — should be ${s.target}%${l.fix ? ' · tap Fix' : ''}`;
+  if (l.boot_level) return s.level === 0
+    ? `Plug is on but the bar is dark — switch it off and on (it comes up at ${l.boot_level}%)`
+    : `Reads ≈${s.level}% — ${s.target === l.boot_level ? `switch it off and on to reset it to ${s.target}%` : `should be ${s.target}%`}`;
+  return s.level === 0 ? 'Plug is on but the light is dark — press power on its remote' : `Reads ≈${s.level}% — set it to ${s.target}% on the remote`;
+};
+const lpcLightSig = (hass, ls) => ls.map((l) => { const s = lpcLightState(hass, l); return `${s.state}${s.watts == null ? '-' : Math.round(s.watts)}${s.warn ? '!' : ''}${s.busy ? 'b' : ''}${s.on ? 'o' : ''}${s.target || ''}`; }).join(',');
 const lpcNeeds = (s) => s === 'overdue' || s === 'due';
 
 /* ---------- watering log: learn each pot's dry-down time from the gaps between logged waterings ----------
@@ -537,6 +579,10 @@ const lpcHum = (hass, h) => {
   const status = state === 'on' ? (isFinite(w) && w < 2 && settled ? 'dry' : 'run') : state === 'off' ? 'idle' : 'un';
   return { status, hum: isFinite(hum) ? Math.round(hum) : null };
 };
+
+/* Shared with the jump bar (and anything else that needs it): is this grow light actually lit? RF lights are judged by
+ * their draw, not their always-on plug. Takes one entry of a grow-lights `lights:` list. */
+window.LinwoodLightState = lpcLightState;
 
 /* Shared with the Linwood sidebar: { due, overdue, total } using the last card config seen. */
 window.LinwoodPlantSummary = (hass) => {
@@ -849,19 +895,19 @@ class LinwoodPlantCard extends HTMLElement {
   _lightRow(m) {
     const g = m.glSt; if (!g) return '';
     const l = g.l, p = m.p;
-    const word = g.un ? 'Offline' : g.on ? 'On' : 'Off';
+    const word = lpcLightWord(g);
     const top = lpcIv(p.top, null), gap = l.height && top != null ? f1(l.height - top) : null;
     const bits = [];
     if (gap != null) bits.push(`${gap}″ above the plant`);
     if (p.riser) bits.push(`${p.riser}″ riser`);
     if (gap == null && l.note) bits.push(l.note);
     if (g.target) bits.push(`set ${g.target}%`);
-    let sub = bits.join(' · ');
-    if (g.warn) sub = g.level === 0 ? 'Plug is on but the light is dark — press power on its remote' : `Reads ≈${g.level}% — set it to ${g.target}% on the remote`;
-    else if (g.un) sub = 'The plug isn’t responding';
+    const sub = lpcLightMsg(g) || bits.join(' · ');
     const meter = g.on && g.watts != null ? `<span class="glw"><b>${lpcWatts(g.watts)} W</b>${g.level ? `<i>≈${g.level}%</i>` : ''}</span>` : '';
-    const icon = g.un ? 'mdi:lightbulb-alert-outline' : g.on ? 'mdi:lightbulb-on' : 'mdi:lightbulb-outline';
-    return `<button class="glr${g.on ? ' on' : ''}${g.un ? ' un' : ''}${g.warn ? ' warn' : ''}" data-act="more" data-val="${this._esc(l.entity)}"><span class="gli"><ha-icon icon="${icon}"></ha-icon></span><span class="glt"><b>${this._esc(l.name)}${l.height ? ` · ${l.height}″` : ''} · <em>${word}</em></b><i>${this._esc(sub)}</i></span>${meter}</button>`;
+    const icon = g.un || g.nopower ? 'mdi:lightbulb-alert-outline' : g.on ? 'mdi:lightbulb-on' : 'mdi:lightbulb-outline';
+    // an RF light's chart lives on its power sensor (its plug just sits at "on")
+    const info = g.rf && l.power ? l.power : l.entity;
+    return `<button class="glr${g.on ? ' on' : ''}${g.un || g.nopower ? ' un' : ''}${g.warn || g.nopower ? ' warn' : ''}" data-act="more" data-val="${this._esc(info)}"><span class="gli"><ha-icon icon="${icon}"></ha-icon></span><span class="glt"><b>${this._esc(l.name)}${l.height ? ` · ${l.height}″` : ''} · <em>${word}</em></b><i>${this._esc(sub)}</i></span>${meter}</button>`;
   }
 
   _humRow(m) {
@@ -986,7 +1032,7 @@ class LinwoodPlantCard extends HTMLElement {
       : w.learning ? ` · watering: learning — needs ${w.S.learn} gaps between logged waterings (${w.gaps.length} so far)`
       : ` · watering: usually every ~${this._typ(w.learned)} d (middle of the last ${w.recent.length} gaps), check the soil from day ${w.checkDay}`;
     const where = m.lit
-      ? `<ha-icon icon="${on ? 'mdi:lightbulb-on' : 'mdi:lightbulb-outline'}"></ha-icon>${this._esc(m.gl ? m.gl.name : 'Grow light')}${m.glSt && m.glSt.un ? ' · offline' : on ? '' : ' · off'}`
+      ? `<ha-icon icon="${on ? 'mdi:lightbulb-on' : 'mdi:lightbulb-outline'}"></ha-icon>${this._esc(m.gl ? m.gl.name : 'Grow light')}${m.glSt && m.glSt.un ? ' · offline' : m.glSt && m.glSt.nopower ? ' · no power' : on ? '' : ' · off'}`
       : `<ha-icon icon="mdi:window-closed-variant"></ha-icon>${this._esc(m.loc || 'Window')}`;
     return `<article class="tile s-${m.status}${just ? ' just' : ''}" id="lpc-${i}" style="--pc:${this._esc(p.color || '#4ade80')};--sc:${sc}">
   <div class="art${m.lit ? ' lit' : ''}${m.lit && on ? ' on' : ''}">
@@ -1642,7 +1688,8 @@ class LinwoodGrowLightsCard extends HTMLElement {
   set hass(hass) {
     this._hass = hass;
     const c = this._config;
-    const sig = (c.schedule && hass.states[c.schedule] ? hass.states[c.schedule].state : '-') + lpcLightSig(hass, c.lights);
+    const sig = (c.schedule && hass.states[c.schedule] ? hass.states[c.schedule].state : '-')
+      + (c.master && hass.states[c.master] ? hass.states[c.master].state : '-') + lpcLightSig(hass, c.lights);
     if (sig !== this._sig) { this._sig = sig; this._paint(); }
   }
   getCardSize() { return 6; }
@@ -1653,6 +1700,21 @@ class LinwoodGrowLightsCard extends HTMLElement {
     if (!el || el.disabled || !this._hass) return;
     const { act, val } = el.dataset;
     if (act === 'toggle') {
+      const l = this._config.lights[Number(el.dataset.i)];
+      if (!l) return;
+      const st = lpcLightState(this._hass, l);
+      if (st.un || st.busy) return;
+      this.dispatchEvent(new CustomEvent('haptic', { detail: 'medium', bubbles: true, composed: true }));
+      if (st.rf) {
+        // never cut an RF light's plug (that resets it to 100 % and it stops hearing the remote) — its script switches it
+        if (l.power_script) this._hass.callService('script', 'turn_on', { entity_id: l.power_script, variables: { power: st.on ? 'off' : 'on' } });
+      } else {
+        this._hass.callService(l.entity.split('.')[0], st.on ? 'turn_off' : 'turn_on', { entity_id: l.entity });
+      }
+    } else if (act === 'fix') {
+      this.dispatchEvent(new CustomEvent('haptic', { detail: 'medium', bubbles: true, composed: true }));
+      this._hass.callService('script', 'turn_on', { entity_id: val });
+    } else if (act === 'master') {
       const s = this._hass.states[val];
       if (!s || s.state === 'unavailable') return;
       this.dispatchEvent(new CustomEvent('haptic', { detail: 'medium', bubbles: true, composed: true }));
@@ -1689,17 +1751,25 @@ class LinwoodGrowLightsCard extends HTMLElement {
     if (!auto) sub = `Schedule paused · ${sub}`;
     const bl = (ON / 24) * 100, bw = ((OFF - ON) / 24) * 100, np = (mins / 1440) * 100;
     const lab = (x, t, tx, cls = '') => `<span class="${cls}" style="left:${f1(x)}%;transform:translateX(-${tx}%)">${t}</span>`;
-    const rows = L.map((s) => {
+    const rows = L.map((s, i) => {
       const l = s.l;
-      const word = s.un ? 'Offline' : s.on ? 'On' : 'Off';
-      const bits = [l.plants, l.height ? `${l.height}″ above the mantel` : l.note].filter(Boolean).join(' · ');
-      const warn = s.warn ? (s.level === 0 ? 'Plug is on but the light is dark — press power on the remote' : `Reads ≈${s.level}% — set it to ${s.target}% on the remote`) : '';
+      const word = lpcLightWord(s);
+      const how = s.rf ? 'switched by RF' : '';
+      const bits = [l.plants, l.height ? `${l.height}″ above the mantel` : l.note, how].filter(Boolean).join(' · ');
+      const msg = lpcLightMsg(s);
       const right = s.on && s.watts != null
         ? `<span class="w"><b>${lpcWatts(s.watts)} W</b>${s.target ? `<i>${s.level ? `≈${s.level}%` : '—'} · set ${s.target}%</i>` : ''}</span>`
         : s.target ? `<span class="w"><i>set ${s.target}%</i></span>` : '';
-      const icon = s.un ? 'mdi:lightbulb-alert-outline' : s.on ? 'mdi:lightbulb-on' : 'mdi:lightbulb-outline';
-      return `<div class="lt${s.on ? ' on' : ''}${s.un ? ' un' : ''}${s.warn ? ' warn' : ''}"><button class="row" data-act="toggle" data-val="${esc(l.entity)}" aria-pressed="${s.on}" ${s.un ? 'disabled' : ''}><span class="bulb"><ha-icon icon="${icon}"></ha-icon></span><span class="tx"><b>${esc(l.name)} <em>${word}</em></b>${bits ? `<i>${esc(bits)}</i>` : ''}${warn ? `<i class="wn">${esc(warn)}</i>` : ''}</span>${right}</button><button class="info" data-act="more" data-val="${esc(l.entity)}" aria-label="${esc(l.name)} details"><ha-icon icon="mdi:chart-line"></ha-icon></button></div>`;
+      const icon = s.un || s.nopower ? 'mdi:lightbulb-alert-outline' : s.busy ? 'mdi:remote' : s.on ? 'mdi:lightbulb-on' : 'mdi:lightbulb-outline';
+      const bad = s.warn || s.nopower;
+      const canTap = !s.un && !s.busy && (!s.rf || !!l.power_script);
+      const fix = s.rf && s.warn && l.fix ? `<button class="fix" data-act="fix" data-val="${esc(l.fix)}" aria-label="Fix ${esc(l.name)} brightness">Fix</button>` : '';
+      const info = s.rf && l.power ? l.power : l.entity;     // an RF light's history is its draw; its plug just sits at "on"
+      return `<div class="lt${s.on ? ' on' : ''}${s.un || s.nopower ? ' un' : ''}${bad ? ' warn' : ''}${s.busy ? ' busy' : ''}"><button class="row" data-act="toggle" data-i="${i}" aria-pressed="${s.on}" ${canTap ? '' : 'disabled'}><span class="bulb"><ha-icon icon="${icon}"></ha-icon></span><span class="tx"><b>${esc(l.name)} <em>${word}</em></b>${bits ? `<i>${esc(bits)}</i>` : ''}${msg ? `<i class="${bad ? 'wn' : 'bz'}">${esc(msg)}</i>` : ''}</span>${right}</button>${fix}<button class="info" data-act="more" data-val="${esc(info)}" aria-label="${esc(l.name)} details"><ha-icon icon="mdi:chart-line"></ha-icon></button></div>`;
     }).join('');
+    const ms = c.master ? h.states[c.master] : null;
+    const mOn = !!ms && ms.state === 'on', mUn = !ms || ms.state === 'unavailable';
+    const master = c.master ? `<button class="ch mst${mOn ? ' on' : ''}" data-act="master" data-val="${esc(c.master)}" ${mUn ? 'disabled' : ''}><ha-icon icon="${mOn ? 'mdi:power' : 'mdi:power-off'}"></ha-icon><span><i>All grow lights</i><b>${mUn ? 'Unavailable' : mOn ? 'On · tap to turn all off' : 'Off · tap to turn all on'}</b></span><em>Same as the ${hl(ON)} / ${hl(OFF)} schedule</em></button>` : '';
     const total = L.reduce((a, s) => a + (s.on && s.watts != null ? s.watts : 0), 0);
     const armed = Date.now() - this._arm < 4000;
     const schLabel = armed ? (auto ? 'Tap again to pause' : 'Tap again to resume') : auto ? `Auto · ${hl(ON)}–${hl(OFF)}` : 'Paused';
@@ -1711,6 +1781,7 @@ class LinwoodGrowLightsCard extends HTMLElement {
     <div class="lbl">${lab(0, '12 AM', 0, 'edge')}${lab(bl, hl(ON), 50)}${lab(bl + bw, hl(OFF), 50)}${lab(100, '12 AM', 100, 'edge')}</div></div>
   <div class="list">${rows}</div>
   <div class="foot">
+    ${master}
     ${c.schedule ? `<button class="ch${auto ? '' : ' paused'}${armed ? ' armed' : ''}" data-act="sched" data-val="${esc(c.schedule)}"><ha-icon icon="${auto ? 'mdi:calendar-clock' : 'mdi:calendar-remove'}"></ha-icon><span><i>Schedule</i><b>${esc(schLabel)}</b></span></button>` : ''}
     <div class="ch"><ha-icon icon="mdi:flash-outline"></ha-icon><span><i>Drawing now</i><b>${onN ? `${Math.round(total)} W` : '0 W'}</b></span></div>
   </div>
@@ -1743,7 +1814,7 @@ ha-icon { --mdc-icon-size:18px; display:inline-flex; flex:none; }
 .lbl { position:relative; height:14px; margin-top:8px; font-size:11.5px; color:#6b7280; }
 .lbl span { position:absolute; white-space:nowrap; }
 .list { display:flex; flex-direction:column; gap:8px; }
-.lt { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:stretch; border-radius:18px; background:rgba(255,255,255,0.035); border:1px solid rgba(255,255,255,0.06); transition:background .25s, border-color .25s; overflow:hidden; }
+.lt { display:grid; grid-template-columns:minmax(0,1fr); grid-auto-flow:column; grid-auto-columns:auto; align-items:stretch; border-radius:18px; background:rgba(255,255,255,0.035); border:1px solid rgba(255,255,255,0.06); transition:background .25s, border-color .25s; overflow:hidden; }
 .lt.on { background:linear-gradient(145deg, rgba(253,230,138,0.11), rgba(253,230,138,0.025)); border-color:rgba(253,230,138,0.28); }
 .lt.warn { border-color:rgba(245,184,61,0.55); }
 .row { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:12px; padding:12px 6px 12px 12px; min-height:64px; }
@@ -1758,6 +1829,16 @@ ha-icon { --mdc-icon-size:18px; display:inline-flex; flex:none; }
 .lt.on .tx em { color:#fde68a; } .lt.un .tx em { color:#f59e0b; }
 .tx i { font-style:normal; font-size:12.5px; line-height:1.35; color:#9aa0aa; }
 .tx i.wn { color:#f5b83d; font-weight:600; }
+.tx i.bz { color:#c4b5fd; font-weight:600; }
+.lt.busy .bulb { color:#c4b5fd; background:rgba(167,139,250,0.14); animation:bz 1.4s ease-in-out infinite; }
+.lt.busy .tx em { color:#c4b5fd; }
+.fix { align-self:center; margin-right:6px; padding:8px 14px; border-radius:12px; font-size:13px; font-weight:700; color:#140f24; background:#f5b83d; text-align:center; }
+.fix:active { transform:scale(.95); }
+.mst { grid-column:1 / -1; flex-wrap:wrap; text-align:left; }
+.mst em { flex-basis:100%; margin-left:28px; font-style:normal; font-size:11.5px; color:#6b7280; }
+.mst.on { background:rgba(253,230,138,0.10); border-color:rgba(253,230,138,0.30); }
+.mst.on ha-icon, .mst.on b { color:#fde68a; }
+.mst:disabled { opacity:.5; }
 .w { display:flex; flex-direction:column; align-items:flex-end; gap:2px; white-space:nowrap; font-variant-numeric:tabular-nums; }
 .w b { font-size:14px; font-weight:700; color:#fde68a; }
 .w i { font-style:normal; font-size:11.5px; color:#9aa0aa; }
@@ -1775,6 +1856,7 @@ ha-icon { --mdc-icon-size:18px; display:inline-flex; flex:none; }
 .sk { height:320px; border-radius:20px; background:linear-gradient(90deg, rgba(255,255,255,0.04), rgba(255,255,255,0.08), rgba(255,255,255,0.04)); background-size:200% 100%; animation:sh 1.4s linear infinite; }
 @container (max-width: 420px) { .lbl .edge { display:none; } .tx em { margin-left:4px; } }
 @keyframes sh { to { background-position:-200% 0; } }
+@keyframes bz { 50% { opacity:.55; } }
 @media (prefers-reduced-motion: reduce) { * { transition:none !important; animation:none !important; } }
 </style>`;
   }
