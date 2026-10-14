@@ -1,4 +1,10 @@
-/* Linwood Plant Card v3.7.0 — illustrated plant-care tracker for the Plant Care page.
+/* Linwood Plant Card v3.8.0 — illustrated plant-care tracker for the Plant Care page.
+ * v3.8.0: grouped RF lights. A Grow Lights entry with `bars:` (both SANSI mantel bars, plugs on 24/7, switched together
+ *         over RF) renders as one row: one tap runs its power_script, each bar's wattage / level vs. target, one Fix
+ *         button, "Adjusting…" while its scripts run, "No power" if either plug is cut, and a warning when one bar is
+ *         dark while the other is lit. Brightness sliders (25 % steps) per bar; moving one away from the saved target
+ *         shows Apply / Cancel, and Apply sends every bar's level to `levels_script` in one run. LinwoodLightState
+ *         understands groups.
  * v3.7.0: grow lights learn how they're switched. `control: rf` lights (the right mantel bar) keep their plug powered
  *         and are turned on/off over RF, so "on" now means the bar is drawing power and plug-on-but-dark is a normal
  *         Off. Tapping one runs its `power_script` (on/off) instead of cutting the plug; a wrong level shows a Fix
@@ -99,6 +105,16 @@
  * title: Grow lights
  * schedule: automation.living_room_grow_light_schedule   # optional: Auto / Paused chip (tap twice to change)
  * master: switch.grow_lights                          # optional: "All grow lights" row that switches everything
+ * lights:                                             # a grouped RF entry: several bars switched together over RF
+ *   - id: mantel
+ *     name: Mantel bars
+ *     power_script: script.mantel_bars_power           # tap → { power: on | off }
+ *     fix: script.mantel_bars_fix                      # Fix button when a level is wrong
+ *     levels_script: script.mantel_bars_apply_levels   # Apply → { <bar id>: 25|50|75|100, … } in one call
+ *     full_watts: 34.2
+ *     bars:
+ *       - { id: left, name: Left bar, entity: switch.x, power: sensor.x_power, target: input_select.x, height: 36 }
+ *       - { id: right, name: Right bar, entity: switch.y, power: sensor.y_power, target: input_select.y, height: 30 }
  * on_hour: 8
  * off_hour: 20
  * lights: [ { entity, name, power, target, full_watts, height, note, plants: 'Starlight Ficus · Rubber Plant' } ]
@@ -446,6 +462,7 @@ const lpcLightFor = (cfg, p) => {
 };
 /* Brightness is remote-only, so it is read back from the plug's wattage: nearest of 25 / 50 / 75 / 100 % of the bar's full
  * draw (0 = plug on but the bar is dark). Same bands as the "Mantel Grow Light Brightness Check" automation. */
+const LPC_LEVELS = [25, 50, 75, 100];
 const lpcLevel = (w, full) => { const r = w / (Number(full) || 35); return r < 0.06 ? 0 : r < 0.375 ? 25 : r < 0.625 ? 50 : r < 0.87 ? 75 : 100; };
 /* Two kinds of light:
  *  plug (default) — the plug IS the switch: on = plug on; plug on but no draw = the light is dark when it shouldn't be.
@@ -488,7 +505,46 @@ const lpcLightMsg = (s) => {
     : `Reads ≈${s.level}% — ${s.target === l.boot_level ? `switch it off and on to reset it to ${s.target}%` : `should be ${s.target}%`}`;
   return s.level === 0 ? 'Plug is on but the light is dark — press power on its remote' : `Reads ≈${s.level}% — set it to ${s.target}% on the remote`;
 };
-const lpcLightSig = (hass, ls) => ls.map((l) => { const s = lpcLightState(hass, l); return `${s.state}${s.watts == null ? '-' : Math.round(s.watts)}${s.warn ? '!' : ''}${s.busy ? 'b' : ''}${s.on ? 'o' : ''}${s.target || ''}`; }).join(',');
+/* A group of RF bars switched together (plugs on 24/7). Each bar is judged on its own draw; the group is "on" when any
+ * bar is lit, busy while any of its scripts run, and warns when a bar is at the wrong level or dark beside a lit one. */
+const lpcGroupBars = (g) => (Array.isArray(g.bars) ? g.bars : []).map((b) => ({
+  control: 'rf', power_script: g.power_script, fix: g.fix, full_watts: g.full_watts, ...b, _also: g.levels_script,
+}));
+const lpcGroupState = (hass, g) => {
+  const bars = lpcGroupBars(g).map((b) => {
+    const s = lpcLightState(hass, b);
+    if (lpcRunning(hass, b._also)) s.busy = true, s.warn = false;
+    return s;
+  });
+  const on = bars.some((b) => b.on), busy = bars.some((b) => b.busy);
+  const dark = on && !busy ? bars.filter((b) => !b.on && !b.un && !b.nopower) : [];
+  dark.forEach((b) => { b.darkBeside = true; });
+  const watts = bars.some((b) => b.watts != null) ? bars.reduce((a, b) => a + (b.on && b.watts != null ? b.watts : 0), 0) : null;
+  return {
+    l: g, group: true, rf: true, bars, on, busy, watts,
+    state: bars.map((b) => b.state).join('/'),
+    un: bars.length > 0 && bars.every((b) => b.un), someUn: bars.some((b) => b.un),
+    nopower: bars.some((b) => b.nopower), warn: !busy && (bars.some((b) => b.warn) || dark.length > 0),
+  };
+};
+const lpcAnyState = (hass, l) => (l && Array.isArray(l.bars) ? lpcGroupState(hass, l) : lpcLightState(hass, l));
+const lpcGroupMsg = (s) => {
+  if (s.un) return 'The plugs aren’t responding';
+  if (s.busy) return 'Adjusting over RF…';
+  const out = [];
+  s.bars.forEach((b) => {
+    const n = b.l.name || b.l.id;
+    if (b.un) out.push(`${n}: plug isn’t responding`);
+    else if (b.nopower) out.push(`${n}: plug is off — it can’t hear the remote`);
+    else if (b.darkBeside) out.push(`${n} is dark`);
+    else if (b.warn) out.push(`${n} reads ≈${b.level}%, should be ${b.target}%`);
+  });
+  return out.length ? out.join(' · ') + (s.l.fix && (s.warn || s.nopower) ? ' · tap Fix' : '') : '';
+};
+const lpcLightSig = (hass, ls) => ls.map((l) => {
+  if (l && Array.isArray(l.bars)) return `[${lpcLightSig(hass, lpcGroupBars(l))}${lpcRunning(hass, l.levels_script) ? 'a' : ''}]`;
+  const s = lpcLightState(hass, l); return `${s.state}${s.watts == null ? '-' : Math.round(s.watts)}${s.warn ? '!' : ''}${s.busy ? 'b' : ''}${s.on ? 'o' : ''}${s.target || ''}`;
+}).join(',');
 const lpcNeeds = (s) => s === 'overdue' || s === 'due';
 
 /* ---------- watering log: learn each pot's dry-down time from the gaps between logged waterings ----------
@@ -582,7 +638,7 @@ const lpcHum = (hass, h) => {
 
 /* Shared with the jump bar (and anything else that needs it): is this grow light actually lit? RF lights are judged by
  * their draw, not their always-on plug. Takes one entry of a grow-lights `lights:` list. */
-window.LinwoodLightState = lpcLightState;
+window.LinwoodLightState = lpcAnyState;
 
 /* Shared with the Linwood sidebar: { due, overdue, total } using the last card config seen. */
 window.LinwoodPlantSummary = (hass) => {
@@ -902,7 +958,8 @@ class LinwoodPlantCard extends HTMLElement {
     if (p.riser) bits.push(`${p.riser}″ riser`);
     if (gap == null && l.note) bits.push(l.note);
     if (g.target) bits.push(`set ${g.target}%`);
-    const sub = lpcLightMsg(g) || bits.join(' · ');
+    // the tile has no Fix / power button, so drop the "tap …" hints (the Grow Lights card carries those)
+    const sub = lpcLightMsg(g).replace(' · tap Fix', '').replace(' — tap to power it and turn it on', '') || bits.join(' · ');
     const meter = g.on && g.watts != null ? `<span class="glw"><b>${lpcWatts(g.watts)} W</b>${g.level ? `<i>≈${g.level}%</i>` : ''}</span>` : '';
     const icon = g.un || g.nopower ? 'mdi:lightbulb-alert-outline' : g.on ? 'mdi:lightbulb-on' : 'mdi:lightbulb-outline';
     // an RF light's chart lives on its power sensor (its plug just sits at "on")
@@ -1675,14 +1732,28 @@ dialog.hx[open] { animation:hxin .22s cubic-bezier(.2,.8,.2,1); }
 class LinwoodGrowLightsCard extends HTMLElement {
   setConfig(config) {
     if (!config || !Array.isArray(config.lights) || !config.lights.length) throw new Error('Set "lights" to a list of grow lights');
-    config.lights.forEach((l) => { if (!l || !l.entity) throw new Error('Each light needs an "entity"'); });
-    this._config = config; this._arm = 0; this._sig = '';
+    config.lights.forEach((l) => {
+      if (l && Array.isArray(l.bars)) { if (!l.bars.length || l.bars.some((b) => !b || !b.entity || !b.id)) throw new Error('Each bar in "bars" needs an "id" and an "entity"'); }
+      else if (!l || !l.entity) throw new Error('Each light needs an "entity" (or "bars")');
+    });
+    this._config = config; this._arm = 0; this._sig = ''; this._pend = {};
     if (!this.shadowRoot) {
       this.attachShadow({ mode: 'open' });
       this.shadowRoot.addEventListener('click', (ev) => this._click(ev));
+      // brightness sliders: remember the picked level until Apply / Cancel (nothing is sent while dragging)
+      this.shadowRoot.addEventListener('input', (ev) => {
+        const el = ev.composedPath().find((x) => x.dataset && x.dataset.act === 'lvl');
+        if (!el) return;
+        const key = `${el.dataset.i}:${el.dataset.bar}`;
+        this._pend[key] = LPC_LEVELS[Number(el.value) - 1];
+        this._paint();
+      });
     }
     this._paint();
   }
+  /* bar → level the slider should show: what you picked, else the saved target */
+  _pick(i, b) { const k = `${i}:${b.l.id}`; return this._pend[k] != null ? this._pend[k] : b.target; }
+  _dirty(i, s) { return s.bars.some((b) => b.target != null && this._pick(i, b) !== b.target); }
   connectedCallback() { clearInterval(this._tm); this._tm = setInterval(() => this._paint(), 30000); this._paint(); }
   disconnectedCallback() { clearInterval(this._tm); }
   set hass(hass) {
@@ -1702,7 +1773,7 @@ class LinwoodGrowLightsCard extends HTMLElement {
     if (act === 'toggle') {
       const l = this._config.lights[Number(el.dataset.i)];
       if (!l) return;
-      const st = lpcLightState(this._hass, l);
+      const st = lpcAnyState(this._hass, l);
       if (st.un || st.busy) return;
       this.dispatchEvent(new CustomEvent('haptic', { detail: 'medium', bubbles: true, composed: true }));
       if (st.rf) {
@@ -1714,6 +1785,19 @@ class LinwoodGrowLightsCard extends HTMLElement {
     } else if (act === 'fix') {
       this.dispatchEvent(new CustomEvent('haptic', { detail: 'medium', bubbles: true, composed: true }));
       this._hass.callService('script', 'turn_on', { entity_id: val });
+    } else if (act === 'apply' || act === 'cancel') {
+      const i = Number(el.dataset.i), l = this._config.lights[i];
+      if (!l) return;
+      if (act === 'apply' && l.levels_script) {
+        const st = lpcGroupState(this._hass, l);
+        const variables = {};
+        st.bars.forEach((b) => { variables[b.l.id] = this._pick(i, b) || b.target || 100; });
+        this.dispatchEvent(new CustomEvent('haptic', { detail: 'medium', bubbles: true, composed: true }));
+        this._hass.callService('script', 'turn_on', { entity_id: l.levels_script, variables });
+      }
+      // Apply keeps the picks showing until the saved targets catch up (pruned in _paint); Cancel drops them
+      if (act === 'cancel') Object.keys(this._pend).filter((k) => k.startsWith(`${i}:`)).forEach((k) => delete this._pend[k]);
+      this._paint();
     } else if (act === 'master') {
       const s = this._hass.states[val];
       if (!s || s.state === 'unavailable') return;
@@ -1739,7 +1823,9 @@ class LinwoodGrowLightsCard extends HTMLElement {
     const ON = lpcIv(c.on_hour, 8), OFF = lpcIv(c.off_hour, 20);
     const now = new Date(), mins = now.getHours() * 60 + now.getMinutes();
     const inWin = mins >= ON * 60 && mins < OFF * 60;
-    const L = c.lights.map((l) => lpcLightState(h, l));
+    const L = c.lights.map((l) => lpcAnyState(h, l));
+    // a picked level that the saved target has caught up with (after Apply) is no longer pending
+    L.forEach((s, i) => { if (s.group) s.bars.forEach((b) => { const k = `${i}:${b.l.id}`; if (this._pend[k] != null && this._pend[k] === b.target) delete this._pend[k]; }); });
     const onN = L.filter((s) => s.on).length, unN = L.filter((s) => s.un).length, offN = L.length - onN;
     const sch = c.schedule ? h.states[c.schedule] : null, auto = !sch || sch.state === 'on';
     const hl = (x) => new Date(2000, 0, 1, x).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
@@ -1752,6 +1838,7 @@ class LinwoodGrowLightsCard extends HTMLElement {
     const bl = (ON / 24) * 100, bw = ((OFF - ON) / 24) * 100, np = (mins / 1440) * 100;
     const lab = (x, t, tx, cls = '') => `<span class="${cls}" style="left:${f1(x)}%;transform:translateX(-${tx}%)">${t}</span>`;
     const rows = L.map((s, i) => {
+      if (s.group) return this._groupRow(s, i);
       const l = s.l;
       const word = lpcLightWord(s);
       const how = s.rf ? 'switched by RF' : '';
@@ -1788,6 +1875,34 @@ class LinwoodGrowLightsCard extends HTMLElement {
 </div>`);
   }
 
+  /* one row for a group of RF bars: shared on/off, per-bar draw, sliders + Apply */
+  _groupRow(s, i) {
+    const esc = lpcEsc, l = s.l;
+    const short = (b) => String(b.l.name || b.l.id).replace(/ bar$/i, '');
+    const word = s.un ? 'Offline' : s.busy ? 'Adjusting' : s.nopower ? 'No power' : s.on ? 'On' : 'Off';
+    const hts = s.bars.filter((b) => b.l.height).map((b) => `${short(b)} ${b.l.height}″`).join(' · ');
+    const bits = [l.plants, hts ? `${hts} above the mantel` : '', 'switched together by RF'].filter(Boolean).join(' · ');
+    const msg = lpcGroupMsg(s);
+    const bad = s.warn || s.nopower || s.someUn;
+    const icon = s.un || s.nopower ? 'mdi:lightbulb-alert-outline' : s.busy ? 'mdi:remote' : s.on ? 'mdi:lightbulb-group' : 'mdi:lightbulb-group-outline';
+    const canTap = !s.un && !s.busy && !!l.power_script;
+    const right = s.on && s.watts != null ? `<span class="w"><b>${lpcWatts(s.watts)} W</b><i>${s.bars.filter((b) => b.on).length} of ${s.bars.length} lit</i></span>` : '';
+    // the fix script also powers up a cut plug, so it's offered for that too
+    const fix = (s.warn || (s.nopower && !s.busy)) && l.fix ? `<button class="fix" data-act="fix" data-val="${esc(l.fix)}" aria-label="Fix ${esc(l.name)}">Fix</button>` : '';
+    const chart = (s.bars[0] && (s.bars[0].l.power || s.bars[0].l.entity)) || '';
+    const dirty = !s.busy && this._dirty(i, s);
+    const sliders = l.levels_script ? s.bars.map((b) => {
+      const pick = this._pick(i, b) || 100;
+      const changed = b.target != null && pick !== b.target;
+      const now = s.busy ? 'adjusting…' : b.un ? 'offline' : b.nopower ? 'no power' : b.on ? (b.level ? `now ≈${b.level}% · ${lpcWatts(b.watts)} W` : 'now dark') : 'standby';
+      return `<div class="lv${changed ? ' chg' : ''}"><div class="lvh"><b>${esc(b.l.name || b.l.id)}</b><span>${changed ? `${b.target}% → ` : ''}<em>${pick}%</em></span></div>`
+        + `<input type="range" min="1" max="4" step="1" value="${Math.max(1, LPC_LEVELS.indexOf(pick) + 1)}" data-act="lvl" data-i="${i}" data-bar="${esc(b.l.id)}" aria-label="${esc(b.l.name || b.l.id)} brightness" ${s.busy || s.un ? 'disabled' : ''}>`
+        + `<div class="tk">${LPC_LEVELS.map((x) => `<span>${x}%</span>`).join('')}</div><i>${esc(now)}</i></div>`;
+    }).join('') : '';
+    const apply = dirty ? `<div class="ap"><button class="cx" data-act="cancel" data-i="${i}">Cancel</button><button class="go" data-act="apply" data-i="${i}">Apply · ${s.bars.map((b) => `${esc(short(b))} ${this._pick(i, b)}%`).join(' / ')}</button></div>` : '';
+    return `<div class="lt grp${s.on ? ' on' : ''}${s.un || s.nopower ? ' un' : ''}${bad ? ' warn' : ''}${s.busy ? ' busy' : ''}"><button class="row" data-act="toggle" data-i="${i}" aria-pressed="${s.on}" ${canTap ? '' : 'disabled'}><span class="bulb"><ha-icon icon="${icon}"></ha-icon></span><span class="tx"><b>${esc(l.name || 'Bars')} <em>${word}</em></b>${bits ? `<i>${esc(bits)}</i>` : ''}${msg ? `<i class="${bad ? 'wn' : 'bz'}">${esc(msg)}</i>` : ''}</span>${right}</button>${fix}<button class="info" data-act="more" data-val="${esc(chart)}" aria-label="${esc(l.name || 'Bars')} details"><ha-icon icon="mdi:chart-line"></ha-icon></button>${sliders ? `<div class="lvls">${sliders}${apply}</div>` : ''}</div>`;
+  }
+
   _css() {
     return `<style>
 :host { display:block; }
@@ -1795,6 +1910,22 @@ class LinwoodGrowLightsCard extends HTMLElement {
 button { font:inherit; color:inherit; background:none; border:none; padding:0; cursor:pointer; -webkit-tap-highlight-color:transparent; touch-action:manipulation; text-align:left; }
 button:disabled { cursor:default; }
 ha-icon { --mdc-icon-size:18px; display:inline-flex; flex:none; }
+.lt.grp { grid-auto-flow:row; grid-template-columns:minmax(0,1fr) auto auto; }
+.lvls { grid-column:1 / -1; display:grid; grid-template-columns:repeat(auto-fit, minmax(190px, 1fr)); gap:10px; padding:2px 12px 14px; }
+.lv { display:flex; flex-direction:column; gap:6px; padding:11px 13px 10px; border-radius:14px; background:rgba(0,0,0,0.18); border:1px solid rgba(255,255,255,0.05); min-width:0; }
+.lv.chg { border-color:rgba(253,230,138,0.45); }
+.lvh { display:flex; justify-content:space-between; align-items:baseline; gap:8px; font-size:13px; }
+.lvh b { font-weight:700; } .lvh span { color:#9aa0aa; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.lvh em { font-style:normal; font-weight:700; color:#f3f4f6; } .lv.chg .lvh em { color:#fde68a; }
+.lv input[type=range] { width:100%; margin:4px 0 0; accent-color:#fde68a; height:24px; cursor:pointer; touch-action:pan-y; }
+.lv input[type=range]:disabled { opacity:.45; cursor:default; }
+.tk { display:flex; justify-content:space-between; font-size:10.5px; color:#6b7280; font-variant-numeric:tabular-nums; padding:0 2px; }
+.lv > i { font-style:normal; font-size:11.5px; color:#9aa0aa; }
+.ap { grid-column:1 / -1; display:flex; justify-content:flex-end; gap:8px; flex-wrap:wrap; }
+.ap button { padding:10px 16px; border-radius:12px; font-size:13.5px; font-weight:700; text-align:center; }
+.ap .cx { background:rgba(255,255,255,0.06); color:#c9cdd4; }
+.ap .go { background:#fde68a; color:#140f24; }
+.ap button:active { transform:scale(.97); }
 .card { container-type:inline-size; display:flex; flex-direction:column; gap:16px; padding:22px; border-radius:28px; background:rgba(255,255,255,0.035); border:1px solid rgba(255,255,255,0.07); color:#f3f4f6; font-family:var(--ha-font-family-body, Roboto, sans-serif); transition:background .3s, border-color .3s; }
 .card.lit { background:linear-gradient(180deg, rgba(253,230,138,0.07), rgba(255,255,255,0.03)); border-color:rgba(253,230,138,0.30); }
 .top { display:flex; justify-content:space-between; align-items:center; gap:12px; }
