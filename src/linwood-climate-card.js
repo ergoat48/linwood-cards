@@ -1,4 +1,9 @@
-/* Linwood Climate Card v1.2.0 — custom dial thermostat for Home Assistant
+/* Linwood Climate Card v1.3.0 — custom dial thermostat for Home Assistant
+ * v1.3.0: `rooms:` list → Rooms panel: a shared temperature rail (every room as a dot against the setpoint and its comfort
+ *         band) plus one row per room with temperature, humidity where the room has it, a 24 h sparkline on a shared
+ *         scale, live presence (motion / occupancy, "quiet · 12 min") and battery warnings. `comfort:` (a select such as the
+ *         ecobee Home / Sleep / Away mode) replaces the Preset tile; `resume:` (a button such as ecobee Clear Hold) adds a
+ *         Resume chip to the header. The single `room:` reading still works for configs without `rooms:`.
  * v1.2.0: re-renders patch the DOM in place (LinwoodMorph) instead of replacing it — fixes the iOS jump-to-top on tap. */
   /* LinwoodMorph — patch live DOM to match new markup instead of replacing it (innerHTML).
    * Replacing recreated every ha-icon, which renders a frame late at zero width: the card briefly shrank and iOS
@@ -97,15 +102,62 @@ const LCC_WX = {
 };
 const LCC_WXL = { partlycloudy: 'Partly cloudy', 'clear-night': 'Clear', 'lightning-rainy': 'Storms', 'snowy-rainy': 'Sleet', 'windy-variant': 'Windy', exceptional: 'Alert' };
 const A0 = 135, SWEEP = 270, CX = 150, CY = 150, R = 118;
+const LCC_ROOM_COLORS = ['#f5b83d', '#38bdf8', '#a78bfa', '#2dd4bf', '#f472b6', '#4ade80'];
+const LCC_COMFORT = {
+  home: { label: 'Home', icon: 'mdi:home-outline' },
+  sleep: { label: 'Sleep', icon: 'mdi:power-sleep' },
+  away: { label: 'Away', icon: 'mdi:exit-run' },
+};
+const lccEsc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const lccAgo = (ms) => {
+  const m = Math.max(0, Math.round(ms / 60000));
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} h${m % 60 && h < 6 ? ' ' + (m % 60) + ' min' : ''}`;
+  return `${Math.floor(h / 24)} d`;
+};
+/* HA history rows, compressed (s / lc / lu, epoch seconds) or full (state / last_changed) → [{ t, v }] */
+const lccRows = (rows) => {
+  const out = [];
+  (rows || []).forEach((e) => {
+    const ts = e.lc != null ? e.lc : e.lu;
+    const t = ts != null ? ts * 1000 : Date.parse(e.last_changed || e.last_updated);
+    const v = parseFloat(e.s != null ? e.s : e.state);
+    if (isFinite(t)) out.push({ t, v: isFinite(v) ? v : null });
+  });
+  return out.sort((a, b) => a.t - b.t);
+};
+/* average into n buckets so a day of readings draws as a light path; gaps (unavailable) survive as breaks */
+const lccThin = (pts, t0, t1, n) => {
+  const w = (t1 - t0) / n, out = [];
+  let k = null, sum = 0, cnt = 0;
+  const flush = () => { if (cnt) out.push({ t: t0 + (k + 0.5) * w, v: sum / cnt }); sum = 0; cnt = 0; };
+  pts.forEach((p) => {
+    if (p.t < t0) { if (p.v != null) { k = 0; sum = p.v; cnt = 1; } return; }   // the reading in force when the window opens
+    if (p.v == null) { flush(); k = null; out.push(p); return; }
+    const kk = Math.max(0, Math.min(n - 1, Math.floor((p.t - t0) / w)));
+    if (kk !== k) { flush(); k = kk; }
+    sum += p.v; cnt++;
+  });
+  flush();
+  return out;
+};
 
 class LinwoodClimateCard extends HTMLElement {
   setConfig(config) {
     if (!config || !config.entity || !config.entity.startsWith('climate.')) throw new Error('Set "entity" to a climate entity');
     this._config = config;
+    this._rooms = (Array.isArray(config.rooms) ? config.rooms : [])
+      .filter((r) => r && (r.temperature || r.motion))
+      .map((r, i) => Object.assign({ color: LCC_ROOM_COLORS[i % LCC_ROOM_COLORS.length] }, r));
     this._pending = null;
     this._side = 'low';
     this._drag = false;
     this._sig = null;
+    this._hist = null;
+    this._histT = 0;
+    this._histVer = 0;
     if (!this.shadowRoot) { this.attachShadow({ mode: 'open' }); this._wire(); }
     if (this._hass) this._render(true);
   }
@@ -113,7 +165,17 @@ class LinwoodClimateCard extends HTMLElement {
   set hass(hass) {
     this._hass = hass;
     if (!this._drag) this._render(false);
+    this._history();
   }
+
+  connectedCallback() {
+    // relative times ("quiet · 12 min") move on even when no state changes
+    clearInterval(this._clock);
+    this._clock = setInterval(() => { if (!this._drag) this._render(false); }, 30000);
+    this._history();
+  }
+
+  disconnectedCallback() { clearInterval(this._clock); this._clock = null; }
 
   getCardSize() { return 10; }
   getGridOptions() { return { columns: 12, rows: 'auto', min_columns: 6 }; }
@@ -166,11 +228,62 @@ class LinwoodClimateCard extends HTMLElement {
 
   _sigOf(st) {
     const c = this._config, parts = [JSON.stringify(st.attributes), st.state];
-    [c.weather, c.humidity, c.humidifier, c.room && c.room.temperature, c.room && c.room.humidity].forEach((id) => {
-      const s = this._st(id); parts.push(s ? s.state + (s.attributes.temperature != null ? '|' + s.attributes.temperature : '') : '-');
+    const ids = [c.weather, c.humidity, c.humidifier, c.comfort, c.room && c.room.temperature, c.room && c.room.humidity];
+    this._rooms.forEach((r) => ids.push(r.temperature, r.humidity, r.motion, r.occupancy, r.battery));
+    ids.forEach((id) => {
+      const s = this._st(id);
+      parts.push(s ? s.state + '|' + s.last_changed + (s.attributes.temperature != null ? '|' + s.attributes.temperature : '') : '-');
     });
-    parts.push(JSON.stringify(this._pending), this._side);
+    parts.push(JSON.stringify(this._pending), this._side, this._histVer);
+    if (this._rooms.length) parts.push(Math.floor(Date.now() / 60000));
     return parts.join('§');
+  }
+
+  /* ---------- room history (sparklines) ---------- */
+  _histHours() { return Math.max(1, Number(this._config.history_hours) || 24); }
+
+  _history() {
+    if (!this._hass || !this._rooms.length || this._fetching || !this.isConnected) return;
+    if (this._histT && Date.now() - this._histT < 600000) { this._histLive(); return; }
+    this._fetchHistory();
+  }
+
+  async _fetchHistory() {
+    const ids = this._rooms.map((r) => r.temperature).filter(Boolean);
+    if (!ids.length || !this._hass.callWS) return;
+    this._fetching = true;
+    this._histT = Date.now();
+    const t1 = Date.now(), t0 = t1 - this._histHours() * 3600000;
+    try {
+      const r = await this._hass.callWS({
+        type: 'history/history_during_period', start_time: new Date(t0).toISOString(), end_time: new Date(t1).toISOString(),
+        entity_ids: ids, minimal_response: true, no_attributes: true, significant_changes_only: false,
+      });
+      const h = {};
+      ids.forEach((id) => { h[id] = lccRows(r && r[id]); });
+      this._hist = h;
+      this._histVer++;
+    } catch (e) {
+      this._histT = Date.now() - 480000;   // retry in ~2 minutes; the rows keep their last lines meanwhile
+    }
+    this._fetching = false;
+    if (!this._drag) this._render(false);
+  }
+
+  /* new readings are appended as they arrive, so sparklines keep moving between the 10-minute refetches */
+  _histLive() {
+    if (!this._hist) return;
+    let grew = false;
+    this._rooms.forEach((r) => {
+      const arr = r.temperature && this._hist[r.temperature], s = this._st(r.temperature);
+      if (!arr || !s) return;
+      const t = Date.parse(s.last_changed), last = arr[arr.length - 1];
+      if (!isFinite(t) || (last && last.t >= t)) return;
+      const v = parseFloat(s.state);
+      arr.push({ t, v: isFinite(v) ? v : null });
+      grew = true;
+    });
+    if (grew) { this._histVer++; if (!this._drag) this._render(false); }
   }
 
   /* ---------- render ---------- */
@@ -271,22 +384,34 @@ class LinwoodClimateCard extends HTMLElement {
     const fanOn = a.fan_mode === 'on';
     const presetTxt = this._presetLabel(a.preset_mode);
     const presetAct = a.preset_mode && a.preset_mode !== 'none';
+    const cf = this._st(this._config.comfort);
+    let fourth;
+    if (cf) {
+      // a comfort select (ecobee Home / Sleep / Away); "unknown" means the thermostat is simply running its schedule
+      const opts4 = (cf.attributes.options || []), known = opts4.includes(cf.state);
+      const lk = LCC_COMFORT[cf.state] || {};
+      const lab = known ? (lk.label || this._cap(cf.state)) : (cf.state === 'unavailable' ? 'Offline' : 'Schedule');
+      fourth = `<button class="stat${known ? ' act' : ''}" data-act="comfort" ${opts4.length && cf.state !== 'unavailable' ? '' : 'disabled'}><span class="k">COMFORT<ha-icon icon="${known ? (lk.icon || 'mdi:tune-variant') : 'mdi:calendar-clock'}"></ha-icon></span><span class="sv">${lccEsc(lab)}</span></button>`;
+    } else {
+      fourth = `<button class="stat${presetAct ? ' act' : ''}" data-act="preset" ${presets.length ? '' : 'disabled'}><span class="k">PRESET<ha-icon icon="${presetAct ? 'mdi:leaf' : 'mdi:home-outline'}"></ha-icon></span><span class="sv">${presetTxt}</span></button>`;
+    }
     const targetTxt = off ? '—' : dual ? `${this._fmt(t.low)}–${this._fmt(t.high)}°` : `${this._fmt(t.single)}°`;
     const opts = (a.hvac_modes || []).map((hm) => {
       const lab = (LCC_MODES[hm] || {}).label || this._cap(hm);
       return `<option value="${hm}"${hm === mode ? ' selected' : ''}>${lab}</option>`;
     }).join('');
 
-    // flat readings
+    // flat readings (with a rooms list, the weather moves into the Rooms panel header)
     const reads = [];
     const wx = this._st(this._config.weather);
-    if (wx) {
+    const roomsPanel = this._rooms.length ? this._roomsHtml(st, look, t, dual, off, wx) : '';
+    if (wx && !roomsPanel) {
       const wt = wx.attributes.temperature != null ? Math.round(wx.attributes.temperature) : null;
       reads.push(this._read(LCC_WX[wx.state] || 'mdi:weather-partly-cloudy', ['sunny', 'clear-night', 'partlycloudy'].includes(wx.state) ? '#fbbf24' : '#cbd5e1',
         'Outside', `${this._fmt(wt)}°`, LCC_WXL[wx.state] || this._cap(wx.state)));
     }
     const room = this._config.room;
-    if (room) {
+    if (room && !roomsPanel) {
       const rt = this._num(room.temperature), rh = this._num(room.humidity);
       reads.push(this._read(room.icon || 'mdi:bed-king-outline', '#2dd4bf', room.name || 'Room', `${rt != null ? Math.round(rt) : '--'}°`, rh != null ? `${Math.round(rh)}% humidity` : ''));
     }
@@ -304,6 +429,7 @@ class LinwoodClimateCard extends HTMLElement {
   <div class="head">
     <span class="title">CLIMATE</span>
     <span class="status"><i class="dot${active ? ' pulse' : ''}"></i>${look.label}</span>
+    ${this._st(this._config.resume) ? `<button class="resume" data-act="resume" title="Resume the thermostat schedule (clears any hold)"><ha-icon icon="mdi:calendar-sync"></ha-icon><span>Resume</span></button>` : ''}
     <button class="more" data-act="more" title="Details"><ha-icon icon="mdi:dots-horizontal"></ha-icon></button>
   </div>
   <div class="dialwrap">
@@ -342,10 +468,158 @@ class LinwoodClimateCard extends HTMLElement {
     <label class="stat sel"><span class="k">MODE<ha-icon icon="mdi:chevron-down"></ha-icon></span><span class="sv mode">${mm.label}</span>
       <select class="msel" aria-label="HVAC mode">${opts}</select></label>
     <button class="stat${fanOn ? ' act' : ''}" data-act="fan" ${fanModes.length ? '' : 'disabled'}><span class="k">FAN<ha-icon icon="mdi:fan${fanOn ? '' : '-off'}"${fanOn ? ' class="spin"' : ''}></ha-icon></span><span class="sv">${fanModes.length ? (fanOn ? 'On' : 'Auto') : '—'}</span></button>
-    <button class="stat${presetAct ? ' act' : ''}" data-act="preset" ${presets.length ? '' : 'disabled'}><span class="k">PRESET<ha-icon icon="${presetAct ? 'mdi:leaf' : 'mdi:home-outline'}"></ha-icon></span><span class="sv">${presetTxt}</span></button>
+    ${fourth}
   </div>
+  ${roomsPanel}
   ${reads.length ? `<div class="reads">${reads.join('')}</div>` : ''}
 </div>`;
+  }
+
+  /* ---------- Rooms panel ---------- */
+  _roomsHtml(st, look, t, dual, off, wx) {
+    const now = Date.now(), t0 = now - this._histHours() * 3600000;
+    const rows = this._rooms.map((r, i) => ({
+      r, i, temp: this._num(r.temperature), hum: this._num(r.humidity), bat: this._num(r.battery),
+      ms: this._st(r.motion), os: this._st(r.occupancy),
+    }));
+    const vals = rows.map((x) => x.temp).filter((v) => v != null);
+    const tl = off ? null : (dual ? t.low : t.single), th = off ? null : (dual ? t.high : t.single);
+
+    let meta = '';
+    if (vals.length > 1) {
+      const sp = Math.max(...vals) - Math.min(...vals), avg = vals.reduce((s, v) => s + v, 0) / vals.length;
+      meta = `${this._fmt(Math.round(sp * 10) / 10)}° spread · avg ${this._fmt(Math.round(avg * 10) / 10)}°`;
+    }
+    let wxp = '';
+    if (wx) {
+      const wt = wx.attributes.temperature;
+      const sunny = ['sunny', 'clear-night', 'partlycloudy'].includes(wx.state);
+      wxp = `<button class="wxp" data-act="info" data-val="${lccEsc(wx.entity_id)}" title="${lccEsc(LCC_WXL[wx.state] || this._cap(wx.state))}"><ha-icon icon="${LCC_WX[wx.state] || 'mdi:weather-partly-cloudy'}" style="color:${sunny ? '#fbbf24' : '#cbd5e1'}"></ha-icon><span class="wxt">${wt != null ? Math.round(wt) : '--'}°</span><span class="wxl">outside</span></button>`;
+    }
+
+    // one scale for every sparkline, so a flat line really means a steady room
+    let lo = Infinity, hi = -Infinity;
+    const series = rows.map((x) => {
+      const pts = this._hist && x.r.temperature ? this._hist[x.r.temperature] : null;
+      if (!pts || !pts.length) return null;
+      const thin = lccThin(pts, t0, now, 60);
+      thin.forEach((p) => { if (p.v != null) { lo = Math.min(lo, p.v); hi = Math.max(hi, p.v); } });
+      return thin;
+    });
+    vals.forEach((v) => { lo = Math.min(lo, v); hi = Math.max(hi, v); });
+    if (!isFinite(lo)) { lo = 60; hi = 80; }
+    if (hi - lo < 2) { const m = (hi + lo) / 2; lo = m - 1; hi = m + 1; }
+
+    const rail = vals.length ? this._rail(rows, tl, th) : '';
+    const list = rows.map((x, k) => this._roomRow(x, series[k], t0, now, lo, hi, tl, th)).join('');
+    return `<div class="roomsbox">
+    <div class="rhead"><span class="rtitle">ROOMS</span>${meta ? `<span class="rmeta">${meta}</span>` : ''}${wxp}</div>
+    ${rail}
+    <div class="rlist">${list}</div>
+  </div>`;
+  }
+
+  /* every room on one horizontal temperature scale, against the setpoint and a ±1° comfort band */
+  _rail(rows, tl, th) {
+    const pts = rows.filter((x) => x.temp != null);
+    const all = pts.map((x) => x.temp);
+    if (tl != null) all.push(tl, th);
+    let lo = Math.floor(Math.min(...all) - 0.6), hi = Math.ceil(Math.max(...all) + 0.6);
+    for (let g = 0; hi - lo < 4 && g < 6; g++) { if (g % 2) hi++; else lo--; }
+    const X = (v) => Math.min(100, Math.max(0, ((v - lo) / (hi - lo)) * 100));
+    // dots that would overlap stack upward on stems
+    const placed = pts.map((x) => ({ x, p: X(x.temp) })).sort((a, b) => a.p - b.p);
+    const lastAt = [];
+    placed.forEach((o) => {
+      let L = 0;
+      while (lastAt[L] != null && o.p - lastAt[L] < 9 && L < 3) L++;
+      o.L = L;
+      lastAt[L] = o.p;
+    });
+    const levels = Math.max(1, ...placed.map((o) => o.L + 1));
+    const dots = placed.map((o) => {
+      const r = o.x.r, live = o.x.ms && o.x.ms.state === 'on';
+      return `<button class="rdot${live ? ' live' : ''}" data-act="info" data-val="${lccEsc(r.temperature)}" style="left:${o.p.toFixed(2)}%;--rc:${r.color};--lvl:${o.L}" title="${lccEsc(r.name || 'Room')} · ${this._fmt(Math.round(o.x.temp * 10) / 10)}°" aria-label="${lccEsc(r.name || 'Room')}"><ha-icon icon="${r.icon || 'mdi:home-thermometer-outline'}"></ha-icon></button>`;
+    }).join('');
+    let ticks = '';
+    for (let v = lo; v <= hi; v++) ticks += `<i class="rtk" style="left:${X(v).toFixed(2)}%"></i>`;
+    let band = '', tg = '';
+    if (tl != null) {
+      const a = X(tl === th ? tl - 1 : tl), b = X(tl === th ? th + 1 : th);
+      band = `<i class="rband" style="left:${a.toFixed(2)}%;width:${(b - a).toFixed(2)}%"></i>`;
+      const marks = tl === th ? [tl] : [tl, th];
+      tg = marks.map((v) => `<span class="rtg" style="left:${X(v).toFixed(2)}%"><i></i>${this._fmt(v)}°</span>`).join('');
+    }
+    return `<div class="rail" style="--levels:${levels}">
+      <div class="rdots">${dots}</div>
+      <div class="rtrack">${band}${ticks}</div>
+      <div class="rscale"><span class="rend l">${lo}°</span><span class="rend r">${hi}°</span>${tg}</div>
+    </div>`;
+  }
+
+  _roomRow(x, pts, t0, t1, lo, hi, tl, th) {
+    const r = x.r, now = Date.now();
+    const motion = x.ms && x.ms.state === 'on', occ = x.os && x.os.state === 'on';
+    const offline = [x.ms, x.os].some((s) => s && s.state === 'unavailable') || (r.temperature && !this._st(r.temperature)) ||
+      (this._st(r.temperature) && this._st(r.temperature).state === 'unavailable');
+    let pres = '', pcls = '';
+    if (offline) { pres = 'Offline'; pcls = 'off'; }
+    else if (motion) { pres = 'Motion now'; pcls = 'live'; }
+    else if (occ) { pres = 'Occupied'; pcls = 'occ'; }
+    else if (x.ms || x.os) {
+      const ref = x.ms || x.os, ago = now - Date.parse(ref.last_changed);
+      pres = isFinite(ago) ? `Quiet · ${lccAgo(ago)}` : 'Quiet';
+    }
+    const bits = [];
+    if (pres) bits.push(`<span class="p">${pres}</span>`);
+    if (x.hum != null) bits.push(`<span class="h"><ha-icon icon="mdi:water-percent"></ha-icon>${Math.round(x.hum)}%</span>`);
+    if (x.bat != null && x.bat <= (r.battery_low || 20)) bits.push(`<span class="warn"><ha-icon icon="mdi:battery-alert-variant-outline"></ha-icon>${Math.round(x.bat)}%</span>`);
+    let delta = '', dcls = '';
+    if (tl != null && x.temp != null) {
+      const d = x.temp < tl ? x.temp - tl : x.temp > th ? x.temp - th : 0;
+      const dr = Math.round(d * 10) / 10;
+      if (Math.abs(dr) < 0.05) { delta = tl === th ? 'on target' : 'in range'; dcls = 'ok'; }
+      else { delta = `${dr > 0 ? '+' : '−'}${this._fmt(Math.abs(dr))}°`; dcls = Math.abs(dr) <= 1 ? 'near' : dr < 0 ? 'cold' : 'warm'; }
+    }
+    return `<button class="room ${pcls}" data-act="info" data-val="${lccEsc(r.temperature || r.motion)}" style="--rc:${r.color}">
+      <span class="ric"><ha-icon icon="${r.icon || 'mdi:home-thermometer-outline'}"></ha-icon><i class="pdot"></i></span>
+      <span class="rmain"><span class="rname">${lccEsc(r.name || 'Room')}${r.thermostat ? '<em>Thermostat</em>' : ''}</span><span class="rsub">${bits.join('')}</span></span>
+      <span class="rspark">${this._spark(pts, t0, t1, lo, hi, r.color, x.i, x.temp)}</span>
+      <span class="rtemp"><span class="rtv">${x.temp != null ? this._fmt(Math.round(x.temp * 10) / 10) : '--'}<small>°</small></span>${delta ? `<span class="rdl ${dcls}">${delta}</span>` : ''}</span>
+    </button>`;
+  }
+
+  /* 24 h sparkline: line + soft fill; the latest reading holds to "now" and ends in a dot */
+  _spark(pts, t0, t1, lo, hi, color, i, cur) {
+    const W = 100, H = 32, P = 4;
+    const X = (tm) => Math.min(W, Math.max(0, ((tm - t0) / (t1 - t0)) * W));
+    const Y = (v) => P + (1 - (v - lo) / (hi - lo)) * (H - 2 * P);
+    const segs = [];
+    let seg = [];
+    (pts || []).forEach((p) => {
+      if (p.v == null) { if (seg.length) segs.push(seg); seg = []; return; }
+      seg.push([X(p.t), Y(p.v)]);
+    });
+    if (seg.length) segs.push(seg);
+    if (cur != null) {
+      const last = segs[segs.length - 1];
+      if (last) last.push([W, Y(cur)]); else segs.push([[W - 4, Y(cur)], [W, Y(cur)]]);
+    }
+    if (!segs.length) return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true"><line x1="0" y1="${H / 2}" x2="${W}" y2="${H / 2}" class="spk-none"/></svg>`;
+    let line = '', area = '';
+    segs.forEach((s) => {
+      if (s.length === 1) s.push([Math.min(W, s[0][0] + 2), s[0][1]]);
+      const d = s.map((q, k) => `${k ? 'L' : 'M'}${q[0].toFixed(2)} ${q[1].toFixed(2)}`).join(' ');
+      line += d + ' ';
+      area += `${d} L${s[s.length - 1][0].toFixed(2)} ${H} L${s[0][0].toFixed(2)} ${H} Z `;
+    });
+    // the end dot is HTML, not SVG: the sparkline stretches (preserveAspectRatio none) and would squash a circle
+    const end = cur != null ? `<i class="spk-dot" style="top:${((Y(cur) / H) * 100).toFixed(1)}%"></i>` : '';
+    const gid = `lccsg${i}`;
+    return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
+      <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${color}" stop-opacity=".32"/><stop offset="100%" stop-color="${color}" stop-opacity="0"/></linearGradient></defs>
+      <path d="${area}" fill="url(#${gid})"/><path d="${line}" class="spk-line" style="stroke:${color}"/>
+    </svg>${end}`;
   }
 
   _read(icon, color, k, v, s) {
@@ -474,6 +748,21 @@ class LinwoodClimateCard extends HTMLElement {
       case 'humidifier':
         if (this._config.humidifier) this._hass.callService('homeassistant', 'toggle', { entity_id: this._config.humidifier });
         break;
+      case 'comfort': {
+        const cf = this._st(this._config.comfort), op = (cf && cf.attributes.options) || [];
+        if (!op.length) return;
+        const next = op[(op.indexOf(cf.state) + 1) % op.length];
+        this._hass.callService('select', 'select_option', { entity_id: this._config.comfort, option: next })
+          .catch((err) => this._toast(`Comfort: ${err.message || err}`));
+        break;
+      }
+      case 'resume':
+        if (!this._config.resume) return;
+        this._hass.callService('button', 'press', { entity_id: this._config.resume })
+          .then(() => this._toast('Schedule resumed'))
+          .catch((err) => this._toast(`Resume: ${err.message || err}`));
+        break;
+      case 'info': if (val) this._moreInfo(val); break;
       case 'more': this._moreInfo(this._config.entity); break;
       default: break;
     }
@@ -501,6 +790,10 @@ class LinwoodClimateCard extends HTMLElement {
     });
   }
 
+  _toast(message) {
+    this.dispatchEvent(new CustomEvent('hass-notification', { detail: { message }, bubbles: true, composed: true }));
+  }
+
   _moreInfo(entityId) {
     this.dispatchEvent(new CustomEvent('hass-more-info', { detail: { entityId }, bubbles: true, composed: true }));
   }
@@ -513,7 +806,7 @@ class LinwoodClimateCard extends HTMLElement {
 button { font:inherit; color:inherit; background:none; border:none; padding:0; cursor:pointer; -webkit-tap-highlight-color:transparent; }
 button:disabled { cursor:default; opacity:.5; }
 ha-icon { --mdc-icon-size:18px; display:inline-flex; }
-.card { position:relative; overflow:hidden; background:rgba(255,255,255,0.035); border:1px solid rgba(255,255,255,0.07); border-radius:28px; padding:22px; color:#f3f4f6; font-family:var(--ha-font-family-body, Roboto, sans-serif); transition:border-color .4s; }
+.card { position:relative; overflow:hidden; container-type:inline-size; container-name:lccard; background:rgba(255,255,255,0.035); border:1px solid rgba(255,255,255,0.07); border-radius:28px; padding:22px; color:#f3f4f6; font-family:var(--ha-font-family-body, Roboto, sans-serif); transition:border-color .4s; }
 .card::before { content:''; position:absolute; top:-130px; right:-130px; width:360px; height:360px; border-radius:50%; background:radial-gradient(closest-side, color-mix(in srgb, var(--c2) 24%, transparent), transparent); pointer-events:none; opacity:.35; transition:opacity .4s; }
 .card.fx-heat::before, .card.fx-cool::before { opacity:1; animation:breathe 4s ease-in-out infinite; }
 .card.fx-off::before { opacity:0; }
@@ -598,6 +891,73 @@ ha-icon { --mdc-icon-size:18px; display:inline-flex; }
 .sw .knobsw { position:absolute; top:3px; left:3px; width:18px; height:18px; border-radius:50%; background:#e5e7eb; box-shadow:0 1px 3px rgba(0,0,0,.4); transition:transform .2s; }
 .sw.on { background:#2dd4bf; }
 .sw.on .knobsw { transform:translateX(18px); background:#fff; }
+.resume { display:flex; align-items:center; gap:6px; height:32px; padding:0 11px; border-radius:10px; font-size:13px; font-weight:600; color:#cbd5e1; background:rgba(255,255,255,0.05); }
+.resume ha-icon { --mdc-icon-size:16px; color:var(--c2); }
+.resume:hover { background:rgba(255,255,255,0.09); }
+.resume:active { transform:scale(.96); }
+@container lccard (max-width: 360px) { .resume span { display:none; } .resume { padding:0 8px; } }
+/* Rooms panel */
+.roomsbox { margin-top:16px; padding-top:14px; border-top:1px solid rgba(255,255,255,0.07); container-type:inline-size; container-name:rooms; }
+.rhead { display:flex; align-items:center; gap:10px; min-height:30px; }
+.rtitle { font-size:11px; letter-spacing:.14em; font-weight:700; color:#8b919c; }
+.rmeta { flex:1; font-size:12px; color:#6b7280; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.wxp { margin-left:auto; display:flex; align-items:center; gap:6px; height:30px; padding:0 10px; border-radius:10px; background:rgba(255,255,255,0.045); border:1px solid rgba(255,255,255,0.06); white-space:nowrap; }
+.wxp ha-icon { --mdc-icon-size:17px; }
+.wxt { font-size:14px; font-weight:700; }
+.wxl { font-size:12px; color:#8b919c; }
+.rail { position:relative; margin:10px 4px 4px; }
+.rdots { position:relative; height:calc(var(--levels) * 28px + 6px); }
+.rdot { position:absolute; bottom:calc(6px + var(--lvl) * 28px); transform:translateX(-50%); width:26px; height:26px; border-radius:50%; display:flex; align-items:center; justify-content:center; background:var(--rc); color:#111318; box-shadow:0 0 0 3px #15171c, 0 4px 12px color-mix(in srgb, var(--rc) 35%, transparent); transition:left .6s cubic-bezier(.2,.8,.2,1), transform .15s; z-index:1; }
+.rdot ha-icon { --mdc-icon-size:15px; }
+.rdot:hover { transform:translateX(-50%) scale(1.12); z-index:2; }
+.rdot::after { content:''; position:absolute; left:50%; top:100%; width:2px; margin-left:-1px; height:calc(6px + var(--lvl) * 28px); background:linear-gradient(var(--rc), color-mix(in srgb, var(--rc) 20%, transparent)); border-radius:1px; pointer-events:none; }
+.rdot.live::before { content:''; position:absolute; inset:-3px; border-radius:50%; border:2px solid var(--rc); animation:radar 1.8s ease-out infinite; pointer-events:none; }
+.rtrack { position:relative; height:6px; border-radius:3px; background:rgba(255,255,255,0.07); }
+.rband { position:absolute; top:0; bottom:0; border-radius:3px; background:linear-gradient(90deg, color-mix(in srgb, var(--c2) 18%, transparent), color-mix(in srgb, var(--c2) 42%, transparent), color-mix(in srgb, var(--c2) 18%, transparent)); transition:left .5s, width .5s; }
+.fx-off .rband { display:none; }
+.rtk { position:absolute; top:9px; width:1px; height:4px; margin-left:-.5px; background:rgba(255,255,255,0.14); }
+.rscale { position:relative; height:24px; margin-top:4px; font-size:11px; font-weight:600; color:#6b7280; font-variant-numeric:tabular-nums; }
+.rend { position:absolute; top:7px; }
+.rend.l { left:0; transform:translateX(-30%); }
+.rend.r { right:0; transform:translateX(30%); }
+.rtg { position:absolute; top:4px; transform:translateX(-50%); display:flex; flex-direction:column; align-items:center; color:var(--c2); font-size:11.5px; font-weight:700; line-height:1.1; padding:0 4px; background:#16181d; border-radius:6px; transition:left .5s; }
+.rtg i { width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-bottom:5px solid var(--c2); margin-bottom:1px; }
+.rlist { display:flex; flex-direction:column; gap:6px; margin-top:8px; }
+.room { display:grid; grid-template-columns:38px minmax(0,1fr) minmax(48px,84px) auto; align-items:center; column-gap:12px; width:100%; padding:9px 12px 9px 9px; border-radius:16px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.05); text-align:left; transition:background .15s, border-color .3s; }
+.room:hover { background:rgba(255,255,255,0.06); }
+.room.live { border-color:color-mix(in srgb, #4ade80 30%, transparent); background:linear-gradient(100deg, color-mix(in srgb, #4ade80 9%, transparent), rgba(255,255,255,0.03) 55%); }
+.ric { position:relative; width:38px; height:38px; border-radius:12px; display:flex; align-items:center; justify-content:center; color:var(--rc); background:color-mix(in srgb, var(--rc) 14%, transparent); }
+.ric ha-icon { --mdc-icon-size:19px; }
+.pdot { position:absolute; right:-2px; top:-2px; width:10px; height:10px; border-radius:50%; background:#4b5563; border:2px solid #16181d; }
+.room.occ .pdot { background:#2dd4bf; }
+.room.live .pdot { background:#4ade80; box-shadow:0 0 8px #4ade80; animation:ping-g 1.6s ease-out infinite; }
+.room.off .pdot { background:#ef4444; }
+.rmain { display:flex; flex-direction:column; min-width:0; gap:3px; }
+.rname { display:flex; align-items:center; gap:7px; font-size:14.5px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.rname em { font-style:normal; font-size:9.5px; letter-spacing:.1em; text-transform:uppercase; font-weight:700; color:#8b919c; padding:2px 6px; border-radius:6px; background:rgba(255,255,255,0.06); }
+.rsub { display:flex; align-items:center; flex-wrap:wrap; gap:4px 10px; font-size:12px; color:#8b919c; white-space:nowrap; }
+.rsub ha-icon { --mdc-icon-size:13px; margin-right:1px; }
+.rsub .h { display:inline-flex; align-items:center; color:#7dd3fc; }
+.room.live .rsub .p { color:#4ade80; font-weight:600; }
+.room.occ .rsub .p { color:#5eead4; }
+.room.off .rsub .p { color:#f87171; }
+.rsub .warn { display:inline-flex; align-items:center; color:#fbbf24; }
+.rspark { position:relative; height:32px; min-width:0; }
+.spark { width:100%; height:100%; display:block; overflow:visible; }
+.spk-line { fill:none; stroke-width:1.8; stroke-linejoin:round; stroke-linecap:round; vector-effect:non-scaling-stroke; }
+.spk-none { stroke:rgba(255,255,255,0.08); stroke-width:1.5; stroke-dasharray:3 4; vector-effect:non-scaling-stroke; }
+.spk-dot { position:absolute; right:-3px; width:6px; height:6px; margin-top:-3px; border-radius:50%; background:var(--rc); box-shadow:0 0 0 2px #16181d, 0 0 8px var(--rc); }
+.rtemp { display:flex; flex-direction:column; align-items:flex-end; min-width:52px; }
+.rtv { font-size:21px; font-weight:700; letter-spacing:-0.02em; font-variant-numeric:tabular-nums; line-height:1.05; }
+.rtv small { font-size:13px; font-weight:600; color:#9aa0aa; margin-left:1px; vertical-align:top; }
+.rdl { font-size:11px; font-weight:700; margin-top:2px; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.rdl.ok { color:#4ade80; }
+.rdl.near { color:#9aa0aa; }
+.rdl.cold { color:#7dd3fc; }
+.rdl.warm { color:#fb923c; }
+@container rooms (max-width: 330px) { .room { grid-template-columns:36px minmax(0,1fr) auto; } .rspark { display:none; } }
+@keyframes radar { 0% { transform:scale(1); opacity:.9; } 100% { transform:scale(1.9); opacity:0; } }
+@keyframes ping-g { 0% { box-shadow:0 0 0 0 rgba(74,222,128,.6); } 100% { box-shadow:0 0 0 7px rgba(74,222,128,0); } }
 @keyframes rise { 0% { transform:translateY(0) scale(1); opacity:0; } 15% { opacity:.95; } 100% { transform:translateY(-118px) scale(.4); opacity:0; } }
 @keyframes fall { 0% { transform:translate(0,0); opacity:0; } 15% { opacity:.9; } 100% { transform:translate(6px,118px); opacity:0; } }
 @keyframes glowpulse { 0%,100% { opacity:.18; } 50% { opacity:.5; } }
@@ -614,5 +974,5 @@ ha-icon { --mdc-icon-size:18px; display:inline-flex; }
 if (!customElements.get('linwood-climate-card')) customElements.define('linwood-climate-card', LinwoodClimateCard);
 window.customCards = window.customCards || [];
 if (!window.customCards.find((c) => c.type === 'linwood-climate-card')) {
-  window.customCards.push({ type: 'linwood-climate-card', name: 'Linwood Climate Card', description: 'Dial thermostat with mode, fan, preset and room readings', preview: false });
+  window.customCards.push({ type: 'linwood-climate-card', name: 'Linwood Climate Card', description: 'Dial thermostat with mode, fan, comfort/preset and a Rooms panel (temperature rail, sparklines, presence)', preview: false });
 }
