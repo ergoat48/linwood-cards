@@ -1,4 +1,5 @@
-/* Linwood Climate Card v1.3.0 — custom dial thermostat for Home Assistant
+/* Linwood Climate Card v1.3.1 — custom dial thermostat for Home Assistant
+ * v1.3.1: the Thermostat tag on a room row hides when the column is narrow instead of clipping.
  * v1.3.0: `rooms:` list → Rooms panel: a shared temperature rail (every room as a dot against the setpoint and its comfort
  *         band) plus one row per room with temperature, humidity where the room has it, a 24 h sparkline on a shared
  *         scale, live presence (motion / occupancy, "quiet · 12 min") and battery warnings. `comfort:` (a select such as the
@@ -955,7 +956,7 @@ ha-icon { --mdc-icon-size:18px; display:inline-flex; }
 .rdl.near { color:#9aa0aa; }
 .rdl.cold { color:#7dd3fc; }
 .rdl.warm { color:#fb923c; }
-@container rooms (max-width: 330px) { .room { grid-template-columns:36px minmax(0,1fr) auto; } .rspark { display:none; } }
+@container rooms (max-width: 330px) { .room { grid-template-columns:36px minmax(0,1fr) auto; } .rspark { display:none; } .rname em { display:none; } }
 @keyframes radar { 0% { transform:scale(1); opacity:.9; } 100% { transform:scale(1.9); opacity:0; } }
 @keyframes ping-g { 0% { box-shadow:0 0 0 0 rgba(74,222,128,.6); } 100% { box-shadow:0 0 0 7px rgba(74,222,128,0); } }
 @keyframes rise { 0% { transform:translateY(0) scale(1); opacity:0; } 15% { opacity:.95; } 100% { transform:translateY(-118px) scale(.4); opacity:0; } }
