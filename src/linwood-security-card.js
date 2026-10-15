@@ -1,4 +1,5 @@
-/* Linwood Security Card v1.0.0 — motion overview for Home Assistant
+/* Linwood Security Card v1.0.1 — motion overview for Home Assistant
+ * v1.0.1: the radar no longer spins — static rings, with room blips that still pulse while motion is live.
  * A radar status hero ("All quiet" / "Motion · Office" / "Garage open"), one tile per sensor with live motion,
  * last-seen time and event count, a swimlane timeline of every motion burst (and garage-door open spans) over the last
  * 6 h / 24 h / 3 days, and a recent-activity feed. History comes from the recorder; new states are appended live.
@@ -308,7 +309,7 @@ class LinwoodSecurityCard extends HTMLElement {
   </div>
   <div class="hero">
     <div class="radar" aria-hidden="true">
-      <i class="ring r1"></i><i class="ring r2"></i><i class="ring r3"></i><i class="sweep"></i>
+      <i class="ring r1"></i><i class="ring r2"></i><i class="ring r3"></i>
       ${m.lanes.map((l, i) => this._blip(l, i, m)).join('')}
       <span class="core"><ha-icon icon="${st.icon}"></ha-icon></span>
     </div>
@@ -467,8 +468,6 @@ ha-icon { --mdc-icon-size:18px; display:inline-flex; }
 .radar { position:relative; flex:none; width:96px; height:96px; border-radius:50%; background:radial-gradient(circle, color-mix(in srgb, var(--accent) 10%, transparent), transparent 70%); }
 .ring { position:absolute; border-radius:50%; border:1px solid color-mix(in srgb, var(--accent) 22%, transparent); }
 .r1 { inset:0; } .r2 { inset:16%; } .r3 { inset:32%; border-color:color-mix(in srgb, var(--accent) 30%, transparent); }
-.sweep { position:absolute; inset:0; border-radius:50%; background:conic-gradient(from 0deg, color-mix(in srgb, var(--accent) 45%, transparent), transparent 22%, transparent); -webkit-mask:radial-gradient(circle, #000 69%, transparent 70%); mask:radial-gradient(circle, #000 69%, transparent 70%); animation:sweep 4.5s linear infinite; }
-.tone-live .sweep, .tone-alert .sweep { animation-duration:1.8s; }
 .core { position:absolute; left:50%; top:50%; width:34px; height:34px; margin:-17px 0 0 -17px; border-radius:50%; display:flex; align-items:center; justify-content:center; background:color-mix(in srgb, var(--accent) 22%, #15171c); color:var(--accent); box-shadow:0 0 18px color-mix(in srgb, var(--accent) 35%, transparent); }
 .core ha-icon { --mdc-icon-size:19px; }
 .blip { position:absolute; width:8px; height:8px; margin:-4px 0 0 -4px; border-radius:50%; background:var(--bc); opacity:var(--fresh); }
@@ -560,7 +559,6 @@ ha-icon { --mdc-icon-size:18px; display:inline-flex; }
   .tlbody { padding-left:76px; } .grid { left:76px; } .lname { left:-76px; width:72px; font-size:11px; gap:6px; }
   .fdur { display:none; }
 }
-@keyframes sweep { to { transform:rotate(360deg); } }
 @keyframes ping { 0% { box-shadow:0 0 0 0 color-mix(in srgb, currentColor 60%, transparent); } 100% { box-shadow:0 0 0 8px transparent; } }
 @keyframes blip { 0% { box-shadow:0 0 0 0 color-mix(in srgb, var(--bc) 70%, transparent); } 100% { box-shadow:0 0 0 9px transparent; } }
 @keyframes wave { 0% { transform:scale(1); opacity:.8; } 100% { transform:scale(1.7); opacity:0; } }
