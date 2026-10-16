@@ -1,4 +1,9 @@
-/* Linwood Climate Card v1.3.1 — custom dial thermostat for Home Assistant
+/* Linwood Climate Card v1.4.0 — custom dial thermostat for Home Assistant
+ * v1.4.0: `targeting:` (an entity with an `active_sensors` attribute, e.g. the ecobee cloud climate entity) shows which
+ *         room(s) the thermostat is actually following: "Targeting Office" / "Averaging 3 rooms" in the Rooms header,
+ *         a Target / In average tag on those rows and a ring on their rail dots. Replaces the "Occupied" row label
+ *         (occupancy still shows as the teal presence dot). `sleep:` (a schedule / binary entity) adds "· sleep" while on.
+ *         Rooms match `active_sensors` by `sensor:` if set, otherwise by `name:`.
  * v1.3.1: the Thermostat tag on a room row hides when the column is narrow instead of clipping.
  * v1.3.0: `rooms:` list → Rooms panel: a shared temperature rail (every room as a dot against the setpoint and its comfort
  *         band) plus one row per room with temperature, humidity where the room has it, a 24 h sparkline on a shared
@@ -196,6 +201,21 @@ class LinwoodClimateCard extends HTMLElement {
   _cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, ' ') : ''; }
   _presetLabel(p) { return !p || p === 'none' ? 'Home' : this._cap(p); }
 
+  /* Which rooms the thermostat follows right now, from `targeting:`'s active_sensors (ecobee cloud: ["Bedroom", ...]).
+   * null = no `targeting:` configured (rows keep the old Occupied label); { known:false } = configured but no data. */
+  _targeting() {
+    if (!this._config.targeting) return null;
+    const s = this._st(this._config.targeting);
+    const raw = s && s.state !== 'unavailable' && Array.isArray(s.attributes.active_sensors) ? s.attributes.active_sensors : null;
+    if (!raw || !raw.length) return { known: false, keys: new Set(), rooms: [] };
+    const key = (n) => String(n).replace(/\s*\([0-9a-f]{8,}\)\s*$/i, '').trim().toLowerCase();
+    const keys = new Set(raw.map(key));
+    const rooms = this._rooms.filter((r) => keys.has(key(r.sensor || r.name || '')));
+    const sl = this._st(this._config.sleep);
+    return { known: true, keys, key, rooms, count: keys.size, sleep: !!sl && sl.state === 'on' };
+  }
+  _isTarget(tg, r) { return !!(tg && tg.known && tg.keys.has(tg.key(r.sensor || r.name || ''))); }
+
   _look(st) {
     const mode = this._config.preview_mode || st.state, act = this._config.preview_action || st.attributes.hvac_action;
     if (mode === 'off' || mode === 'unavailable' || act === 'off') return LCC_LOOK.off;
@@ -231,6 +251,9 @@ class LinwoodClimateCard extends HTMLElement {
     const c = this._config, parts = [JSON.stringify(st.attributes), st.state];
     const ids = [c.weather, c.humidity, c.humidifier, c.comfort, c.room && c.room.temperature, c.room && c.room.humidity];
     this._rooms.forEach((r) => ids.push(r.temperature, r.humidity, r.motion, r.occupancy, r.battery));
+    ids.push(c.sleep);
+    const tg = this._st(c.targeting);
+    parts.push(tg ? tg.state + '|' + JSON.stringify(tg.attributes.active_sensors || null) : '-');
     ids.forEach((id) => {
       const s = this._st(id);
       parts.push(s ? s.state + '|' + s.last_changed + (s.attributes.temperature != null ? '|' + s.attributes.temperature : '') : '-');
@@ -486,8 +509,19 @@ class LinwoodClimateCard extends HTMLElement {
     const vals = rows.map((x) => x.temp).filter((v) => v != null);
     const tl = off ? null : (dual ? t.low : t.single), th = off ? null : (dual ? t.high : t.single);
 
+    const tg = this._targeting();
     let meta = '';
-    if (vals.length > 1) {
+    if (tg) {
+      const why = tg.sleep ? ' <span class="tw">· sleep</span>' : '';
+      if (!tg.known) meta = '<span class="tl">Target unknown</span>';
+      else if (tg.count === 1 && tg.rooms.length === 1) {
+        const r = tg.rooms[0];
+        meta = `<span class="tl">Targeting</span> <b style="color:${r.color}">${lccEsc(r.name || 'Room')}</b>${why}`;
+      } else {
+        const all = tg.rooms.length === this._rooms.length && tg.count === this._rooms.length;
+        meta = `<span class="tl">Averaging</span> <b>${all ? 'all rooms' : tg.count + ' rooms'}</b>${why}`;
+      }
+    } else if (vals.length > 1) {
       const sp = Math.max(...vals) - Math.min(...vals), avg = vals.reduce((s, v) => s + v, 0) / vals.length;
       meta = `${this._fmt(Math.round(sp * 10) / 10)}° spread · avg ${this._fmt(Math.round(avg * 10) / 10)}°`;
     }
@@ -511,17 +545,17 @@ class LinwoodClimateCard extends HTMLElement {
     if (!isFinite(lo)) { lo = 60; hi = 80; }
     if (hi - lo < 2) { const m = (hi + lo) / 2; lo = m - 1; hi = m + 1; }
 
-    const rail = vals.length ? this._rail(rows, tl, th) : '';
-    const list = rows.map((x, k) => this._roomRow(x, series[k], t0, now, lo, hi, tl, th)).join('');
+    const rail = vals.length ? this._rail(rows, tl, th, tg) : '';
+    const list = rows.map((x, k) => this._roomRow(x, series[k], t0, now, lo, hi, tl, th, tg)).join('');
     return `<div class="roomsbox">
-    <div class="rhead"><span class="rtitle">ROOMS</span>${meta ? `<span class="rmeta">${meta}</span>` : ''}${wxp}</div>
+    <div class="rhead"><span class="rtitle">ROOMS</span>${meta ? `<span class="rmeta${tg ? ' tgt' : ''}">${meta}</span>` : ''}${wxp}</div>
     ${rail}
     <div class="rlist">${list}</div>
   </div>`;
   }
 
   /* every room on one horizontal temperature scale, against the setpoint and a ±1° comfort band */
-  _rail(rows, tl, th) {
+  _rail(rows, tl, th, tgt) {
     const pts = rows.filter((x) => x.temp != null);
     const all = pts.map((x) => x.temp);
     if (tl != null) all.push(tl, th);
@@ -539,8 +573,8 @@ class LinwoodClimateCard extends HTMLElement {
     });
     const levels = Math.max(1, ...placed.map((o) => o.L + 1));
     const dots = placed.map((o) => {
-      const r = o.x.r, live = o.x.ms && o.x.ms.state === 'on';
-      return `<button class="rdot${live ? ' live' : ''}" data-act="info" data-val="${lccEsc(r.temperature)}" style="left:${o.p.toFixed(2)}%;--rc:${r.color};--lvl:${o.L}" title="${lccEsc(r.name || 'Room')} · ${this._fmt(Math.round(o.x.temp * 10) / 10)}°" aria-label="${lccEsc(r.name || 'Room')}"><ha-icon icon="${r.icon || 'mdi:home-thermometer-outline'}"></ha-icon></button>`;
+      const r = o.x.r, live = o.x.ms && o.x.ms.state === 'on', on = this._isTarget(tgt, r);
+      return `<button class="rdot${live ? ' live' : ''}${on ? ' tgt' : ''}" data-act="info" data-val="${lccEsc(r.temperature)}" style="left:${o.p.toFixed(2)}%;--rc:${r.color};--lvl:${o.L}" title="${lccEsc(r.name || 'Room')} · ${this._fmt(Math.round(o.x.temp * 10) / 10)}°" aria-label="${lccEsc(r.name || 'Room')}"><ha-icon icon="${r.icon || 'mdi:home-thermometer-outline'}"></ha-icon></button>`;
     }).join('');
     let ticks = '';
     for (let v = lo; v <= hi; v++) ticks += `<i class="rtk" style="left:${X(v).toFixed(2)}%"></i>`;
@@ -558,7 +592,7 @@ class LinwoodClimateCard extends HTMLElement {
     </div>`;
   }
 
-  _roomRow(x, pts, t0, t1, lo, hi, tl, th) {
+  _roomRow(x, pts, t0, t1, lo, hi, tl, th, tg) {
     const r = x.r, now = Date.now();
     const motion = x.ms && x.ms.state === 'on', occ = x.os && x.os.state === 'on';
     const offline = [x.ms, x.os].some((s) => s && s.state === 'unavailable') || (r.temperature && !this._st(r.temperature)) ||
@@ -566,12 +600,13 @@ class LinwoodClimateCard extends HTMLElement {
     let pres = '', pcls = '';
     if (offline) { pres = 'Offline'; pcls = 'off'; }
     else if (motion) { pres = 'Motion now'; pcls = 'live'; }
-    else if (occ) { pres = 'Occupied'; pcls = 'occ'; }
+    else if (occ) { pcls = 'occ'; if (!tg) pres = 'Occupied'; }   // with `targeting:` the Target tag says more
     else if (x.ms || x.os) {
       const ref = x.ms || x.os, ago = now - Date.parse(ref.last_changed);
       pres = isFinite(ago) ? `Quiet · ${lccAgo(ago)}` : 'Quiet';
     }
-    const bits = [];
+    const bits = [], on = this._isTarget(tg, r);
+    if (on) bits.push(`<span class="tg"><ha-icon icon="mdi:crosshairs-gps"></ha-icon>${tg.count > 1 ? 'In average' : 'Target'}</span>`);
     if (pres) bits.push(`<span class="p">${pres}</span>`);
     if (x.hum != null) bits.push(`<span class="h"><ha-icon icon="mdi:water-percent"></ha-icon>${Math.round(x.hum)}%</span>`);
     if (x.bat != null && x.bat <= (r.battery_low || 20)) bits.push(`<span class="warn"><ha-icon icon="mdi:battery-alert-variant-outline"></ha-icon>${Math.round(x.bat)}%</span>`);
@@ -582,7 +617,7 @@ class LinwoodClimateCard extends HTMLElement {
       if (Math.abs(dr) < 0.05) { delta = tl === th ? 'on target' : 'in range'; dcls = 'ok'; }
       else { delta = `${dr > 0 ? '+' : '−'}${this._fmt(Math.abs(dr))}°`; dcls = Math.abs(dr) <= 1 ? 'near' : dr < 0 ? 'cold' : 'warm'; }
     }
-    return `<button class="room ${pcls}" data-act="info" data-val="${lccEsc(r.temperature || r.motion)}" style="--rc:${r.color}">
+    return `<button class="room ${pcls}${on ? ' tgt' : ''}" data-act="info" data-val="${lccEsc(r.temperature || r.motion)}" style="--rc:${r.color}">
       <span class="ric"><ha-icon icon="${r.icon || 'mdi:home-thermometer-outline'}"></ha-icon><i class="pdot"></i></span>
       <span class="rmain"><span class="rname">${lccEsc(r.name || 'Room')}${r.thermostat ? '<em>Thermostat</em>' : ''}</span><span class="rsub">${bits.join('')}</span></span>
       <span class="rspark">${this._spark(pts, t0, t1, lo, hi, r.color, x.i, x.temp)}</span>
@@ -943,6 +978,13 @@ ha-icon { --mdc-icon-size:18px; display:inline-flex; }
 .room.occ .rsub .p { color:#5eead4; }
 .room.off .rsub .p { color:#f87171; }
 .rsub .warn { display:inline-flex; align-items:center; color:#fbbf24; }
+.rsub .tg { display:inline-flex; align-items:center; gap:2px; color:var(--rc); font-weight:700; }
+.room.tgt { border-color:color-mix(in srgb, var(--rc) 38%, transparent); }
+.room.tgt.live { border-color:color-mix(in srgb, #4ade80 30%, transparent); }
+.rmeta.tgt { color:#8b919c; }
+.rmeta.tgt b { font-weight:700; color:#e5e7eb; }
+.rmeta .tw { color:#a78bfa; }
+.rdot.tgt { box-shadow:0 0 0 2px #15171c, 0 0 0 4px var(--rc), 0 4px 14px color-mix(in srgb, var(--rc) 50%, transparent); }
 .rspark { position:relative; height:32px; min-width:0; }
 .spark { width:100%; height:100%; display:block; overflow:visible; }
 .spk-line { fill:none; stroke-width:1.8; stroke-linejoin:round; stroke-linecap:round; vector-effect:non-scaling-stroke; }
