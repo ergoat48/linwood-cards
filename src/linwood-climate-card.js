@@ -1,4 +1,5 @@
-/* Linwood Climate Card v1.4.0 — custom dial thermostat for Home Assistant
+/* Linwood Climate Card v1.4.1 — custom dial thermostat for Home Assistant
+ * v1.4.1: on narrow cards the Rooms header drops the word "Targeting" (crosshair icon + room name), so the name isn't cut off.
  * v1.4.0: `targeting:` (an entity with an `active_sensors` attribute, e.g. the ecobee cloud climate entity) shows which
  *         room(s) the thermostat is actually following: "Targeting Office" / "Averaging 3 rooms" in the Rooms header,
  *         a Target / In average tag on those rows and a ring on their rail dots. Replaces the "Occupied" row label
@@ -513,13 +514,14 @@ class LinwoodClimateCard extends HTMLElement {
     let meta = '';
     if (tg) {
       const why = tg.sleep ? ' <span class="tw">· sleep</span>' : '';
-      if (!tg.known) meta = '<span class="tl">Target unknown</span>';
+      const ic = '<ha-icon icon="mdi:crosshairs-gps"></ha-icon>';
+      if (!tg.known) meta = `${ic}<span class="tl">Target</span> unknown`;
       else if (tg.count === 1 && tg.rooms.length === 1) {
         const r = tg.rooms[0];
-        meta = `<span class="tl">Targeting</span> <b style="color:${r.color}">${lccEsc(r.name || 'Room')}</b>${why}`;
+        meta = `${ic}<span class="tl">Targeting </span><b style="color:${r.color}">${lccEsc(r.name || 'Room')}</b>${why}`;
       } else {
         const all = tg.rooms.length === this._rooms.length && tg.count === this._rooms.length;
-        meta = `<span class="tl">Averaging</span> <b>${all ? 'all rooms' : tg.count + ' rooms'}</b>${why}`;
+        meta = `${ic}<span class="tl">Averaging </span><b>${all ? 'all rooms' : tg.count + ' rooms'}</b>${why}`;
       }
     } else if (vals.length > 1) {
       const sp = Math.max(...vals) - Math.min(...vals), avg = vals.reduce((s, v) => s + v, 0) / vals.length;
@@ -984,6 +986,8 @@ ha-icon { --mdc-icon-size:18px; display:inline-flex; }
 .rmeta.tgt { color:#8b919c; }
 .rmeta.tgt b { font-weight:700; color:#e5e7eb; }
 .rmeta .tw { color:#a78bfa; }
+.rmeta.tgt ha-icon { --mdc-icon-size:14px; margin-right:4px; vertical-align:-2px; color:#8b919c; }
+@container rooms (max-width: 400px) { .rmeta.tgt .tl { display:none; } }
 .rdot.tgt { box-shadow:0 0 0 2px #15171c, 0 0 0 4px var(--rc), 0 4px 14px color-mix(in srgb, var(--rc) 50%, transparent); }
 .rspark { position:relative; height:32px; min-width:0; }
 .spark { width:100%; height:100%; display:block; overflow:visible; }
