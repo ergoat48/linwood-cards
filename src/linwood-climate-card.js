@@ -1,4 +1,5 @@
-/* Linwood Climate Card v1.7.0 — custom dial thermostat for Home Assistant
+/* Linwood Climate Card v1.7.1 — custom dial thermostat for Home Assistant
+ * v1.7.1: "Hold 68°" fits the Comfort tile on narrow cards (smaller temperature, icon drops when tight).
  * v1.7.0: `hold:` (the ecobee cloud climate entity) lets the Comfort tile show a temperature hold — "Hold · 68°" —
  *         instead of "Schedule" when someone has changed the setpoint. The dropdown's first entry reads "Resume schedule"
  *         whenever any hold is active ("Schedule (no hold)" otherwise) and clears it.
@@ -450,7 +451,8 @@ class LinwoodClimateCard extends HTMLElement {
       const dis = !opts4.length || cf.state === 'unavailable';
       const hs = this._st(this._config.hold);
       const tempHold = !known && !!hs && hs.attributes.preset_mode === 'temp';
-      const holdTxt = `Hold · ${off ? '—' : dual ? `${this._fmt(t.low)}–${this._fmt(t.high)}°` : `${this._fmt(t.single)}°`}`;
+      const holdT = off ? '' : dual ? `${this._fmt(t.low)}–${this._fmt(t.high)}°` : `${this._fmt(t.single)}°`;
+      const holdTxt = `Hold · ${holdT || '—'}`;
       const held = known || tempHold;
       const lab2 = tempHold ? holdTxt : lab;
       const ic2 = known ? (lk.icon || 'mdi:tune-variant') : tempHold ? 'mdi:hand-back-right-outline' : 'mdi:calendar-clock';
@@ -458,7 +460,7 @@ class LinwoodClimateCard extends HTMLElement {
       if (canResume || !held) copts.push(`<option value="${LCC_SCHEDULE}"${held ? '' : ' selected'}${canResume ? '' : ' disabled'}>${held ? 'Resume schedule' : 'Schedule (no hold)'}</option>`);
       if (tempHold) copts.push(`<option value="__hold__" selected disabled>${lccEsc(holdTxt)}</option>`);
       opts4.forEach((o) => copts.push(`<option value="${lccEsc(o)}"${o === cf.state ? ' selected' : ''}>${lccEsc((LCC_COMFORT[o] || {}).label || this._cap(o))}</option>`));
-      fourth = `<label class="stat sel${held ? ' act' : ''}"><span class="k">COMFORT<ha-icon icon="mdi:chevron-down"></ha-icon></span><span class="sv svf"><ha-icon class="svi" icon="${ic2}"></ha-icon>${lccEsc(lab2)}</span>
+      fourth = `<label class="stat sel${held ? ' act' : ''}"><span class="k">COMFORT<ha-icon icon="mdi:chevron-down"></ha-icon></span><span class="sv svf"><ha-icon class="svi" icon="${ic2}"></ha-icon><span class="svt">${tempHold ? `Hold${holdT ? ` <small>${lccEsc(holdT)}</small>` : ''}` : lccEsc(lab2)}</span></span>
       <select class="msel csel" aria-label="Comfort setting" ${dis ? 'disabled' : ''}>${copts.join('')}</select></label>`;
     } else {
       fourth = `<button class="stat${presetAct ? ' act' : ''}" data-act="preset" ${presets.length ? '' : 'disabled'}><span class="k">PRESET<ha-icon icon="${presetAct ? 'mdi:leaf' : 'mdi:home-outline'}"></ha-icon></span><span class="sv">${presetTxt}</span></button>`;
@@ -998,6 +1000,10 @@ ha-icon { --mdc-icon-size:18px; display:inline-flex; }
 .msel option { background:#1b1e24; color:#f3f4f6; }
 .stat .sv.svf { display:flex; align-items:center; gap:6px; min-width:0; max-width:100%; white-space:nowrap; }
 .stat .sv .svi { --mdc-icon-size:18px; flex:none; color:var(--c2); }
+.stat .sv .svt { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.stat .sv .svt small { font-size:15px; font-weight:600; color:#9ca3af; margin-left:2px; }
+.stat.sel { container:lccstat / inline-size; }
+@container lccstat (max-width: 120px) { .stat .sv .svi { display:none; } }
 .reads { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); margin-top:16px; padding-top:14px; border-top:1px solid rgba(255,255,255,0.07); }
 .rd { display:flex; flex-direction:column; align-items:flex-start; gap:3px; min-width:0; padding:0 10px; }
 .rd + .rd { border-left:1px solid rgba(255,255,255,0.07); }
