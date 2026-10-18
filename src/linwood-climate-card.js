@@ -1,4 +1,7 @@
-/* Linwood Climate Card v1.6.1 — custom dial thermostat for Home Assistant
+/* Linwood Climate Card v1.7.0 — custom dial thermostat for Home Assistant
+ * v1.7.0: `hold:` (the ecobee cloud climate entity) lets the Comfort tile show a temperature hold — "Hold · 68°" —
+ *         instead of "Schedule" when someone has changed the setpoint. The dropdown's first entry reads "Resume schedule"
+ *         whenever any hold is active ("Schedule (no hold)" otherwise) and clears it.
  * v1.6.1: the room picker gets its own full-width row under the Rooms title, so the room name and time left always fit.
  * v1.6.0: `pin:` (an input_select: Auto + room names) turns the Rooms header into a picker that pins the thermostat to
  *         one room; `pin_timer:` (a timer) adds the time left ("Pinned Office · 2 h 41 m"). The pinned row's tag reads
@@ -276,6 +279,8 @@ class LinwoodClimateCard extends HTMLElement {
     const ids = [c.weather, c.humidity, c.humidifier, c.comfort, c.room && c.room.temperature, c.room && c.room.humidity];
     this._rooms.forEach((r) => ids.push(r.temperature, r.humidity, r.motion, r.occupancy, r.battery));
     ids.push(c.sleep, c.pin, c.pin_timer);
+    const hd = this._st(c.hold);
+    parts.push(hd ? String(hd.attributes.preset_mode) : '-');
     const tg = this._st(c.targeting);
     parts.push(tg ? tg.state + '|' + JSON.stringify(tg.attributes.active_sensors || null) : '-');
     ids.forEach((id) => {
@@ -439,13 +444,21 @@ class LinwoodClimateCard extends HTMLElement {
       const opts4 = (cf.attributes.options || []), known = opts4.includes(cf.state);
       const lk = LCC_COMFORT[cf.state] || {};
       const lab = known ? (lk.label || this._cap(cf.state)) : (cf.state === 'unavailable' ? 'Offline' : 'Schedule');
-      // a dropdown: "Schedule" (presses `resume:` to clear the hold) plus each comfort option
+      // a dropdown: "Resume schedule" (presses `resume:` to clear any hold) plus each comfort option.
+      // `hold:` (ecobee cloud climate) reports preset_mode "temp" while a temperature hold overrides the schedule.
       const canResume = !!this._st(this._config.resume);
       const dis = !opts4.length || cf.state === 'unavailable';
+      const hs = this._st(this._config.hold);
+      const tempHold = !known && !!hs && hs.attributes.preset_mode === 'temp';
+      const holdTxt = `Hold · ${off ? '—' : dual ? `${this._fmt(t.low)}–${this._fmt(t.high)}°` : `${this._fmt(t.single)}°`}`;
+      const held = known || tempHold;
+      const lab2 = tempHold ? holdTxt : lab;
+      const ic2 = known ? (lk.icon || 'mdi:tune-variant') : tempHold ? 'mdi:hand-back-right-outline' : 'mdi:calendar-clock';
       const copts = [];
-      if (canResume || !known) copts.push(`<option value="${LCC_SCHEDULE}"${known ? '' : ' selected'}${canResume ? '' : ' disabled'}>Schedule</option>`);
+      if (canResume || !held) copts.push(`<option value="${LCC_SCHEDULE}"${held ? '' : ' selected'}${canResume ? '' : ' disabled'}>${held ? 'Resume schedule' : 'Schedule (no hold)'}</option>`);
+      if (tempHold) copts.push(`<option value="__hold__" selected disabled>${lccEsc(holdTxt)}</option>`);
       opts4.forEach((o) => copts.push(`<option value="${lccEsc(o)}"${o === cf.state ? ' selected' : ''}>${lccEsc((LCC_COMFORT[o] || {}).label || this._cap(o))}</option>`));
-      fourth = `<label class="stat sel${known ? ' act' : ''}"><span class="k">COMFORT<ha-icon icon="mdi:chevron-down"></ha-icon></span><span class="sv svf"><ha-icon class="svi" icon="${known ? (lk.icon || 'mdi:tune-variant') : 'mdi:calendar-clock'}"></ha-icon>${lccEsc(lab)}</span>
+      fourth = `<label class="stat sel${held ? ' act' : ''}"><span class="k">COMFORT<ha-icon icon="mdi:chevron-down"></ha-icon></span><span class="sv svf"><ha-icon class="svi" icon="${ic2}"></ha-icon>${lccEsc(lab2)}</span>
       <select class="msel csel" aria-label="Comfort setting" ${dis ? 'disabled' : ''}>${copts.join('')}</select></label>`;
     } else {
       fourth = `<button class="stat${presetAct ? ' act' : ''}" data-act="preset" ${presets.length ? '' : 'disabled'}><span class="k">PRESET<ha-icon icon="${presetAct ? 'mdi:leaf' : 'mdi:home-outline'}"></ha-icon></span><span class="sv">${presetTxt}</span></button>`;
@@ -729,7 +742,10 @@ class LinwoodClimateCard extends HTMLElement {
       }
       if (el && el.classList && el.classList.contains('csel')) {
         const cf = this._st(this._config.comfort);
-        if (el.value === LCC_SCHEDULE) { if (cf && (cf.attributes.options || []).includes(cf.state)) this._act('resume'); }
+        if (el.value === LCC_SCHEDULE) {
+          const hs = this._st(this._config.hold);
+          if (cf && ((cf.attributes.options || []).includes(cf.state) || (hs && hs.attributes.preset_mode === 'temp'))) this._act('resume');
+        }
         else if (cf && el.value !== cf.state) {
           this._hass.callService('select', 'select_option', { entity_id: this._config.comfort, option: el.value })
             .catch((err) => this._toast(`Comfort: ${err.message || err}`));
