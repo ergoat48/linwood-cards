@@ -1,4 +1,8 @@
-/* Linwood Climate Card v1.7.1 — custom dial thermostat for Home Assistant
+/* Linwood Climate Card v1.8.0 — custom dial thermostat for Home Assistant
+ * v1.8.0: Resume (header chip and "Resume schedule") goes through the ecobee cloud when `hold:` is an ecobee entity:
+ *         ecobee.resume_program (resume_all) clears every hold and refreshes that entity at once, so the Comfort tile
+ *         switches from "Hold" to "Schedule" in seconds instead of after the next ~3 min cloud poll. Falls back to
+ *         pressing `resume:` when ecobee isn't available or the call fails.
  * v1.7.1: "Hold 68°" fits the Comfort tile on narrow cards (smaller temperature, icon drops when tight).
  * v1.7.0: `hold:` (the ecobee cloud climate entity) lets the Comfort tile show a temperature hold — "Hold · 68°" —
  *         instead of "Schedule" when someone has changed the setpoint. The dropdown's first entry reads "Resume schedule"
@@ -206,6 +210,16 @@ class LinwoodClimateCard extends HTMLElement {
 
   /* ---------- helpers ---------- */
   _st(id) { return id && this._hass ? this._hass.states[id] : undefined; }
+  /* The `hold:` entity when it's an ecobee cloud climate and ecobee.resume_program exists, else null. */
+  _ecobeeHold() {
+    const id = this._config.hold;
+    if (!id || !this._st(id)) return null;
+    const svc = this._hass.services && this._hass.services.ecobee;
+    if (!svc || !svc.resume_program) return null;
+    const reg = this._hass.entities && this._hass.entities[id];
+    return reg && reg.platform && reg.platform !== 'ecobee' ? null : id;
+  }
+  _canResume() { return !!(this._ecobeeHold() || this._st(this._config.resume)); }
   _num(id) { const s = this._st(id); const v = s ? parseFloat(s.state) : NaN; return isNaN(v) ? null : v; }
   _unit() { return (this._hass.config && this._hass.config.unit_system && this._hass.config.unit_system.temperature) || '°'; }
   _range(a) { return [a.min_temp != null ? a.min_temp : 45, a.max_temp != null ? a.max_temp : 95]; }
@@ -445,9 +459,9 @@ class LinwoodClimateCard extends HTMLElement {
       const opts4 = (cf.attributes.options || []), known = opts4.includes(cf.state);
       const lk = LCC_COMFORT[cf.state] || {};
       const lab = known ? (lk.label || this._cap(cf.state)) : (cf.state === 'unavailable' ? 'Offline' : 'Schedule');
-      // a dropdown: "Resume schedule" (presses `resume:` to clear any hold) plus each comfort option.
+      // a dropdown: "Resume schedule" (clears any hold — see the 'resume' action) plus each comfort option.
       // `hold:` (ecobee cloud climate) reports preset_mode "temp" while a temperature hold overrides the schedule.
-      const canResume = !!this._st(this._config.resume);
+      const canResume = this._canResume();
       const dis = !opts4.length || cf.state === 'unavailable';
       const hs = this._st(this._config.hold);
       const tempHold = !known && !!hs && hs.attributes.preset_mode === 'temp';
@@ -499,7 +513,7 @@ class LinwoodClimateCard extends HTMLElement {
   <div class="head">
     <span class="title">CLIMATE</span>
     <span class="status"><i class="dot${active ? ' pulse' : ''}"></i>${look.label}</span>
-    ${this._st(this._config.resume) ? `<button class="resume" data-act="resume" title="Resume the thermostat schedule (clears any hold)"><ha-icon icon="mdi:calendar-sync"></ha-icon><span>Resume</span></button>` : ''}
+    ${this._canResume() ? `<button class="resume" data-act="resume" title="Resume the thermostat schedule (clears any hold)"><ha-icon icon="mdi:calendar-sync"></ha-icon><span>Resume</span></button>` : ''}
     <button class="more" data-act="more" title="Details"><ha-icon icon="mdi:dots-horizontal"></ha-icon></button>
   </div>
   <div class="dialwrap">
@@ -875,12 +889,18 @@ class LinwoodClimateCard extends HTMLElement {
           .catch((err) => this._toast(`Comfort: ${err.message || err}`));
         break;
       }
-      case 'resume':
-        if (!this._config.resume) return;
-        this._hass.callService('button', 'press', { entity_id: this._config.resume })
+      case 'resume': {
+        // Prefer the ecobee cloud: it clears every hold and refreshes `hold:` immediately (the HomeKit Clear Hold button
+        // works too, but the cloud entity — and so the Hold/Schedule label — only catches up on its next ~3 min poll).
+        const press = () => (this._st(this._config.resume)
+          ? this._hass.callService('button', 'press', { entity_id: this._config.resume })
+          : Promise.reject(new Error('no resume button')));
+        const eco = this._ecobeeHold();
+        (eco ? this._hass.callService('ecobee', 'resume_program', { entity_id: eco, resume_all: true }).catch(press) : press())
           .then(() => this._toast('Schedule resumed'))
           .catch((err) => this._toast(`Resume: ${err.message || err}`));
         break;
+      }
       case 'info': if (val) this._moreInfo(val); break;
       case 'more': this._moreInfo(this._config.entity); break;
       default: break;
