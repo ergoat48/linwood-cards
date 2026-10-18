@@ -1,4 +1,7 @@
-/* Linwood Climate Card v1.5.1 — custom dial thermostat for Home Assistant
+/* Linwood Climate Card v1.6.0 — custom dial thermostat for Home Assistant
+ * v1.6.0: `pin:` (an input_select: Auto + room names) turns the Rooms header into a picker that pins the thermostat to
+ *         one room; `pin_timer:` (a timer) adds the time left ("Pinned Office · 2 h 41 m"). The pinned row's tag reads
+ *         Pinned. The automation behind it does the actual targeting and reverts to Auto when the timer ends.
  * v1.5.1: the Comfort icon stays on the same line as its label on phones.
  * v1.5.0: the Comfort tile is a dropdown (like Mode) instead of tap-to-cycle: Schedule (presses `resume:` to clear the
  *         hold and go back to the thermostat's schedule) then each comfort option (Home / Sleep / Away).
@@ -119,6 +122,7 @@ const LCC_COMFORT = {
   away: { label: 'Away', icon: 'mdi:exit-run' },
 };
 const LCC_SCHEDULE = '__schedule__';
+const lccLeft = (ms) => { const m = Math.ceil(ms / 60000); return m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} m` : `${m} m`; };
 const lccEsc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const lccAgo = (ms) => {
   const m = Math.max(0, Math.round(ms / 60000));
@@ -220,6 +224,20 @@ class LinwoodClimateCard extends HTMLElement {
     return { known: true, keys, key, rooms, count: keys.size, sleep: !!sl && sl.state === 'on' };
   }
   _isTarget(tg, r) { return !!(tg && tg.known && tg.keys.has(tg.key(r.sensor || r.name || ''))); }
+  /* A room pinned through `pin:` (an input_select whose options are Auto + room names). null = not configured. */
+  _pin() {
+    const s = this._st(this._config.pin);
+    if (!s) return null;
+    const opts = s.attributes.options || [];
+    const room = s.state !== 'unavailable' && s.state !== 'unknown' && s.state !== opts[0] ? s.state : null;
+    let left = null;
+    const tm = this._st(this._config.pin_timer);
+    if (room && tm && tm.state === 'active' && tm.attributes.finishes_at) left = Math.max(0, Date.parse(tm.attributes.finishes_at) - Date.now());
+    else if (room && tm && tm.state === 'paused' && tm.attributes.remaining) {
+      const [h, m, sec] = String(tm.attributes.remaining).split(':').map(Number); left = ((h * 60 + m) * 60 + (sec || 0)) * 1000;
+    }
+    return { s, opts, auto: opts[0], room, left, dis: s.state === 'unavailable' };
+  }
 
   _look(st) {
     const mode = this._config.preview_mode || st.state, act = this._config.preview_action || st.attributes.hvac_action;
@@ -256,7 +274,7 @@ class LinwoodClimateCard extends HTMLElement {
     const c = this._config, parts = [JSON.stringify(st.attributes), st.state];
     const ids = [c.weather, c.humidity, c.humidifier, c.comfort, c.room && c.room.temperature, c.room && c.room.humidity];
     this._rooms.forEach((r) => ids.push(r.temperature, r.humidity, r.motion, r.occupancy, r.battery));
-    ids.push(c.sleep);
+    ids.push(c.sleep, c.pin, c.pin_timer);
     const tg = this._st(c.targeting);
     parts.push(tg ? tg.state + '|' + JSON.stringify(tg.attributes.active_sensors || null) : '-');
     ids.forEach((id) => {
@@ -534,7 +552,14 @@ class LinwoodClimateCard extends HTMLElement {
         const all = tg.rooms.length === this._rooms.length && tg.count === this._rooms.length;
         meta = `${ic}<span class="tl">Averaging </span><b>${all ? 'all rooms' : tg.count + ' rooms'}</b>${why}`;
       }
-    } else if (vals.length > 1) {
+    }
+    const pin = this._pin();
+    if (pin && pin.room) {
+      const pr = this._rooms.find((r) => (r.name || '').toLowerCase() === pin.room.toLowerCase());
+      const lf = pin.left != null ? ` <span class="tw">· ${lccLeft(pin.left)}</span>` : '';
+      meta = `<ha-icon icon="mdi:pin"></ha-icon><span class="tl">Pinned </span><b${pr ? ` style="color:${pr.color}"` : ''}>${lccEsc(pin.room)}</b>${lf}`;
+    }
+    if (tg || pin) { /* meta set above */ } else if (vals.length > 1) {
       const sp = Math.max(...vals) - Math.min(...vals), avg = vals.reduce((s, v) => s + v, 0) / vals.length;
       meta = `${this._fmt(Math.round(sp * 10) / 10)}° spread · avg ${this._fmt(Math.round(avg * 10) / 10)}°`;
     }
@@ -561,7 +586,7 @@ class LinwoodClimateCard extends HTMLElement {
     const rail = vals.length ? this._rail(rows, tl, th, tg) : '';
     const list = rows.map((x, k) => this._roomRow(x, series[k], t0, now, lo, hi, tl, th, tg)).join('');
     return `<div class="roomsbox">
-    <div class="rhead"><span class="rtitle">ROOMS</span>${meta ? `<span class="rmeta${tg ? ' tgt' : ''}">${meta}</span>` : ''}${wxp}</div>
+    <div class="rhead"><span class="rtitle">ROOMS</span>${pin ? this._pinPicker(pin, meta) : meta ? `<span class="rmeta${tg ? ' tgt' : ''}">${meta}</span>` : ''}${wxp}</div>
     ${rail}
     <div class="rlist">${list}</div>
   </div>`;
@@ -619,7 +644,8 @@ class LinwoodClimateCard extends HTMLElement {
       pres = isFinite(ago) ? `Quiet · ${lccAgo(ago)}` : 'Quiet';
     }
     const bits = [], on = this._isTarget(tg, r);
-    if (on) bits.push(`<span class="tg"><ha-icon icon="mdi:crosshairs-gps"></ha-icon>${tg.count > 1 ? 'In average' : 'Target'}</span>`);
+    const pinned = this._pin(), isPin = !!(pinned && pinned.room && (r.name || '').toLowerCase() === pinned.room.toLowerCase());
+    if (on || isPin) bits.push(`<span class="tg"><ha-icon icon="mdi:${isPin ? 'pin' : 'crosshairs-gps'}"></ha-icon>${isPin ? 'Pinned' : tg.count > 1 ? 'In average' : 'Target'}</span>`);
     if (pres) bits.push(`<span class="p">${pres}</span>`);
     if (x.hum != null) bits.push(`<span class="h"><ha-icon icon="mdi:water-percent"></ha-icon>${Math.round(x.hum)}%</span>`);
     if (x.bat != null && x.bat <= (r.battery_low || 20)) bits.push(`<span class="warn"><ha-icon icon="mdi:battery-alert-variant-outline"></ha-icon>${Math.round(x.bat)}%</span>`);
@@ -671,6 +697,13 @@ class LinwoodClimateCard extends HTMLElement {
     </svg>${end}`;
   }
 
+  /* the Rooms header as a native picker: Auto (the automation's own rules) or pin one room */
+  _pinPicker(pin, meta) {
+    const o = pin.opts.map((x, i) => `<option value="${lccEsc(x)}"${(pin.room ? x === pin.room : i === 0) ? ' selected' : ''}>${i === 0 ? 'Auto (motion &amp; sleep hours)' : 'Pin ' + lccEsc(x) + ' for 3 h'}</option>`).join('');
+    return `<label class="rpin${pin.room ? ' on' : ''}"><span class="rmeta tgt">${meta || '<ha-icon icon="mdi:crosshairs-gps"></ha-icon>Auto'}</span><ha-icon class="rchev" icon="mdi:chevron-down"></ha-icon>
+      <select class="msel psel" aria-label="Pin the thermostat to a room" ${pin.dis ? 'disabled' : ''}>${o}</select></label>`;
+  }
+
   _read(icon, color, k, v, s) {
     return `<div class="rd"><div class="rk"><ha-icon icon="${icon}" style="color:${color}"></ha-icon>${k}</div><div class="rv">${v}</div><div class="rs">${s || ''}</div></div>`;
   }
@@ -684,6 +717,15 @@ class LinwoodClimateCard extends HTMLElement {
     });
     root.addEventListener('change', (ev) => {
       const el = ev.composedPath()[0];
+      if (el && el.classList && el.classList.contains('psel')) {
+        const ps = this._st(this._config.pin);
+        if (ps && el.value !== ps.state) {
+          this._hass.callService('input_select', 'select_option', { entity_id: this._config.pin, option: el.value })
+            .then(() => this._toast(el.value === (ps.attributes.options || [])[0] ? 'Back to automatic targeting' : `Following ${el.value} for 3 hours`))
+            .catch((err) => this._toast(`Pin: ${err.message || err}`));
+        }
+        return;
+      }
       if (el && el.classList && el.classList.contains('csel')) {
         const cf = this._st(this._config.comfort);
         if (el.value === LCC_SCHEDULE) { if (cf && (cf.attributes.options || []).includes(cf.state)) this._act('resume'); }
@@ -1010,6 +1052,12 @@ ha-icon { --mdc-icon-size:18px; display:inline-flex; }
 .rmeta .tw { color:#a78bfa; }
 .rmeta.tgt ha-icon { --mdc-icon-size:14px; margin-right:4px; vertical-align:-2px; color:#8b919c; }
 @container rooms (max-width: 400px) { .rmeta.tgt .tl { display:none; } }
+.rpin { position:relative; flex:1; min-width:0; display:flex; align-items:center; gap:2px; height:30px; padding:0 6px 0 8px; margin-left:-8px; border-radius:10px; cursor:pointer; }
+.rpin:hover { background:rgba(255,255,255,0.045); }
+.rpin.on { background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.08); }
+.rpin .rmeta { flex:0 1 auto; }
+.rpin .rchev { --mdc-icon-size:16px; flex:none; color:#6b7280; }
+.rpin:focus-within { outline:1px solid color-mix(in srgb, var(--c2) 55%, transparent); }
 .rdot.tgt { box-shadow:0 0 0 2px #15171c, 0 0 0 4px var(--rc), 0 4px 14px color-mix(in srgb, var(--rc) 50%, transparent); }
 .rspark { position:relative; height:32px; min-width:0; }
 .spark { width:100%; height:100%; display:block; overflow:visible; }
