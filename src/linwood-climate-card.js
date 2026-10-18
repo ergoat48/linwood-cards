@@ -1,4 +1,5 @@
-/* Linwood Climate Card v1.5.0 — custom dial thermostat for Home Assistant
+/* Linwood Climate Card v1.5.1 — custom dial thermostat for Home Assistant
+ * v1.5.1: the Comfort icon stays on the same line as its label on phones.
  * v1.5.0: the Comfort tile is a dropdown (like Mode) instead of tap-to-cycle: Schedule (presses `resume:` to clear the
  *         hold and go back to the thermostat's schedule) then each comfort option (Home / Sleep / Away).
  * v1.4.1: on narrow cards the Rooms header drops the word "Targeting" (crosshair icon + room name), so the name isn't cut off.
@@ -425,7 +426,7 @@ class LinwoodClimateCard extends HTMLElement {
       const copts = [];
       if (canResume || !known) copts.push(`<option value="${LCC_SCHEDULE}"${known ? '' : ' selected'}${canResume ? '' : ' disabled'}>Schedule</option>`);
       opts4.forEach((o) => copts.push(`<option value="${lccEsc(o)}"${o === cf.state ? ' selected' : ''}>${lccEsc((LCC_COMFORT[o] || {}).label || this._cap(o))}</option>`));
-      fourth = `<label class="stat sel${known ? ' act' : ''}"><span class="k">COMFORT<ha-icon icon="mdi:chevron-down"></ha-icon></span><span class="sv"><ha-icon class="svi" icon="${known ? (lk.icon || 'mdi:tune-variant') : 'mdi:calendar-clock'}"></ha-icon>${lccEsc(lab)}</span>
+      fourth = `<label class="stat sel${known ? ' act' : ''}"><span class="k">COMFORT<ha-icon icon="mdi:chevron-down"></ha-icon></span><span class="sv svf"><ha-icon class="svi" icon="${known ? (lk.icon || 'mdi:tune-variant') : 'mdi:calendar-clock'}"></ha-icon>${lccEsc(lab)}</span>
       <select class="msel csel" aria-label="Comfort setting" ${dis ? 'disabled' : ''}>${copts.join('')}</select></label>`;
     } else {
       fourth = `<button class="stat${presetAct ? ' act' : ''}" data-act="preset" ${presets.length ? '' : 'disabled'}><span class="k">PRESET<ha-icon icon="${presetAct ? 'mdi:leaf' : 'mdi:home-outline'}"></ha-icon></span><span class="sv">${presetTxt}</span></button>`;
@@ -936,7 +937,8 @@ ha-icon { --mdc-icon-size:18px; display:inline-flex; }
 .fx-off .sv.mode { color:#9aa0aa; }
 .msel { position:absolute; inset:0; width:100%; height:100%; opacity:0; cursor:pointer; font-size:16px; color-scheme:dark; -webkit-appearance:none; appearance:none; border:none; }
 .msel option { background:#1b1e24; color:#f3f4f6; }
-.stat .sv .svi { --mdc-icon-size:18px; margin-right:6px; vertical-align:-2px; color:var(--c2); }
+.stat .sv.svf { display:flex; align-items:center; gap:6px; min-width:0; max-width:100%; white-space:nowrap; }
+.stat .sv .svi { --mdc-icon-size:18px; flex:none; color:var(--c2); }
 .reads { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); margin-top:16px; padding-top:14px; border-top:1px solid rgba(255,255,255,0.07); }
 .rd { display:flex; flex-direction:column; align-items:flex-start; gap:3px; min-width:0; padding:0 10px; }
 .rd + .rd { border-left:1px solid rgba(255,255,255,0.07); }
