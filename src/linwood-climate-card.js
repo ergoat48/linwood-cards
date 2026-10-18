@@ -1,4 +1,6 @@
-/* Linwood Climate Card v1.4.1 — custom dial thermostat for Home Assistant
+/* Linwood Climate Card v1.5.0 — custom dial thermostat for Home Assistant
+ * v1.5.0: the Comfort tile is a dropdown (like Mode) instead of tap-to-cycle: Schedule (presses `resume:` to clear the
+ *         hold and go back to the thermostat's schedule) then each comfort option (Home / Sleep / Away).
  * v1.4.1: on narrow cards the Rooms header drops the word "Targeting" (crosshair icon + room name), so the name isn't cut off.
  * v1.4.0: `targeting:` (an entity with an `active_sensors` attribute, e.g. the ecobee cloud climate entity) shows which
  *         room(s) the thermostat is actually following: "Targeting Office" / "Averaging 3 rooms" in the Rooms header,
@@ -115,6 +117,7 @@ const LCC_COMFORT = {
   sleep: { label: 'Sleep', icon: 'mdi:power-sleep' },
   away: { label: 'Away', icon: 'mdi:exit-run' },
 };
+const LCC_SCHEDULE = '__schedule__';
 const lccEsc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const lccAgo = (ms) => {
   const m = Math.max(0, Math.round(ms / 60000));
@@ -416,7 +419,14 @@ class LinwoodClimateCard extends HTMLElement {
       const opts4 = (cf.attributes.options || []), known = opts4.includes(cf.state);
       const lk = LCC_COMFORT[cf.state] || {};
       const lab = known ? (lk.label || this._cap(cf.state)) : (cf.state === 'unavailable' ? 'Offline' : 'Schedule');
-      fourth = `<button class="stat${known ? ' act' : ''}" data-act="comfort" ${opts4.length && cf.state !== 'unavailable' ? '' : 'disabled'}><span class="k">COMFORT<ha-icon icon="${known ? (lk.icon || 'mdi:tune-variant') : 'mdi:calendar-clock'}"></ha-icon></span><span class="sv">${lccEsc(lab)}</span></button>`;
+      // a dropdown: "Schedule" (presses `resume:` to clear the hold) plus each comfort option
+      const canResume = !!this._st(this._config.resume);
+      const dis = !opts4.length || cf.state === 'unavailable';
+      const copts = [];
+      if (canResume || !known) copts.push(`<option value="${LCC_SCHEDULE}"${known ? '' : ' selected'}${canResume ? '' : ' disabled'}>Schedule</option>`);
+      opts4.forEach((o) => copts.push(`<option value="${lccEsc(o)}"${o === cf.state ? ' selected' : ''}>${lccEsc((LCC_COMFORT[o] || {}).label || this._cap(o))}</option>`));
+      fourth = `<label class="stat sel${known ? ' act' : ''}"><span class="k">COMFORT<ha-icon icon="mdi:chevron-down"></ha-icon></span><span class="sv"><ha-icon class="svi" icon="${known ? (lk.icon || 'mdi:tune-variant') : 'mdi:calendar-clock'}"></ha-icon>${lccEsc(lab)}</span>
+      <select class="msel csel" aria-label="Comfort setting" ${dis ? 'disabled' : ''}>${copts.join('')}</select></label>`;
     } else {
       fourth = `<button class="stat${presetAct ? ' act' : ''}" data-act="preset" ${presets.length ? '' : 'disabled'}><span class="k">PRESET<ha-icon icon="${presetAct ? 'mdi:leaf' : 'mdi:home-outline'}"></ha-icon></span><span class="sv">${presetTxt}</span></button>`;
     }
@@ -673,6 +683,15 @@ class LinwoodClimateCard extends HTMLElement {
     });
     root.addEventListener('change', (ev) => {
       const el = ev.composedPath()[0];
+      if (el && el.classList && el.classList.contains('csel')) {
+        const cf = this._st(this._config.comfort);
+        if (el.value === LCC_SCHEDULE) { if (cf && (cf.attributes.options || []).includes(cf.state)) this._act('resume'); }
+        else if (cf && el.value !== cf.state) {
+          this._hass.callService('select', 'select_option', { entity_id: this._config.comfort, option: el.value })
+            .catch((err) => this._toast(`Comfort: ${err.message || err}`));
+        }
+        return;
+      }
       if (el && el.classList && el.classList.contains('msel')) {
         const st = this._st(this._config.entity);
         if (st && el.value !== st.state) this._call('climate', 'set_hvac_mode', { hvac_mode: el.value });
@@ -917,6 +936,7 @@ ha-icon { --mdc-icon-size:18px; display:inline-flex; }
 .fx-off .sv.mode { color:#9aa0aa; }
 .msel { position:absolute; inset:0; width:100%; height:100%; opacity:0; cursor:pointer; font-size:16px; color-scheme:dark; -webkit-appearance:none; appearance:none; border:none; }
 .msel option { background:#1b1e24; color:#f3f4f6; }
+.stat .sv .svi { --mdc-icon-size:18px; margin-right:6px; vertical-align:-2px; color:var(--c2); }
 .reads { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); margin-top:16px; padding-top:14px; border-top:1px solid rgba(255,255,255,0.07); }
 .rd { display:flex; flex-direction:column; align-items:flex-start; gap:3px; min-width:0; padding:0 10px; }
 .rd + .rd { border-left:1px solid rgba(255,255,255,0.07); }
