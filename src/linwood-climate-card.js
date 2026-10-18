@@ -1,4 +1,5 @@
-/* Linwood Climate Card v1.6.0 — custom dial thermostat for Home Assistant
+/* Linwood Climate Card v1.6.1 — custom dial thermostat for Home Assistant
+ * v1.6.1: the room picker gets its own full-width row under the Rooms title, so the room name and time left always fit.
  * v1.6.0: `pin:` (an input_select: Auto + room names) turns the Rooms header into a picker that pins the thermostat to
  *         one room; `pin_timer:` (a timer) adds the time left ("Pinned Office · 2 h 41 m"). The pinned row's tag reads
  *         Pinned. The automation behind it does the actual targeting and reverts to Auto when the timer ends.
@@ -1052,10 +1053,13 @@ ha-icon { --mdc-icon-size:18px; display:inline-flex; }
 .rmeta .tw { color:#a78bfa; }
 .rmeta.tgt ha-icon { --mdc-icon-size:14px; margin-right:4px; vertical-align:-2px; color:#8b919c; }
 @container rooms (max-width: 400px) { .rmeta.tgt .tl { display:none; } }
-.rpin { position:relative; flex:1; min-width:0; display:flex; align-items:center; gap:2px; height:30px; padding:0 6px 0 8px; margin-left:-8px; border-radius:10px; cursor:pointer; }
-.rpin:hover { background:rgba(255,255,255,0.045); }
-.rpin.on { background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.08); }
-.rpin .rmeta { flex:0 1 auto; }
+.rhead:has(.rpin) { flex-wrap:wrap; row-gap:8px; }
+.rpin { position:relative; order:3; flex:1 0 100%; min-width:0; display:flex; align-items:center; gap:4px; height:34px; padding:0 8px 0 11px; border-radius:10px; cursor:pointer; background:rgba(255,255,255,0.035); border:1px solid rgba(255,255,255,0.06); box-sizing:border-box; }
+.rpin:hover { background:rgba(255,255,255,0.06); }
+.rpin.on { background:color-mix(in srgb, var(--c2) 10%, rgba(255,255,255,0.03)); border-color:color-mix(in srgb, var(--c2) 35%, transparent); }
+.rpin .rmeta { flex:1 1 auto; font-size:13px; }
+.rpin .rmeta .tl { display:inline !important; }
+.rpin.on .rmeta ha-icon { color:var(--c2); }
 .rpin .rchev { --mdc-icon-size:16px; flex:none; color:#6b7280; }
 .rpin:focus-within { outline:1px solid color-mix(in srgb, var(--c2) 55%, transparent); }
 .rdot.tgt { box-shadow:0 0 0 2px #15171c, 0 0 0 4px var(--rc), 0 4px 14px color-mix(in srgb, var(--rc) 50%, transparent); }
