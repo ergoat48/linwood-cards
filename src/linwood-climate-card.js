@@ -1,4 +1,6 @@
-/* Linwood Climate Card v1.13.0 — custom dial thermostat for Home Assistant
+/* Linwood Climate Card v1.13.1 — custom dial thermostat for Home Assistant
+ * v1.13.1: the Comfort tile's small label carries the status — SCHEDULE / HOLD — and the value line just the comfort
+ *         (Home, Sleep, Away) or the held temperature, so nothing is cut off on a phone.
  * v1.13.0: the Comfort tile follows the ecobee cloud (`hold:`) instead of the HomeKit select, which reports the comfort
  *         in effect without saying whether it is scheduled or held. On the schedule it reads "Home · schedule" (the
  *         comfort the schedule is running, from climate_mode); a comfort hold reads "Sleep · hold", like the pill in
@@ -549,10 +551,11 @@ class LinwoodClimateCard extends HTMLElement {
       const holdT = off ? '' : dual ? `${this._fmt(t.low)}–${this._fmt(t.high)}°` : `${this._fmt(t.single)}°`;
       const hk = cs.hold === 'away_indefinitely' ? 'away' : cs.hold;
       const hl = hk && LCC_COMFORT[hk];
-      let ic, txt;
-      if (!cs.hold) { ic = (LCC_COMFORT[sk] || {}).icon || 'mdi:calendar-clock'; txt = `${lccEsc(slab)} <small>schedule</small>`; }
-      else if (hl) { ic = hl.icon; txt = `${hl.label} <small>${cs.hold === 'away_indefinitely' ? 'hold ∞' : 'hold'}</small>`; }
-      else if (cs.hold === 'temp') { ic = 'mdi:hand-back-right-outline'; txt = `Hold${holdT ? ` <small>${lccEsc(holdT)}</small>` : ''}`; }
+      // the tile's small label says schedule vs hold, so the value line only needs the comfort name
+      let ic, txt, kl = 'HOLD';
+      if (!cs.hold) { ic = (LCC_COMFORT[sk] || {}).icon || 'mdi:calendar-clock'; txt = lccEsc(slab); kl = 'SCHEDULE'; }
+      else if (hl) { ic = hl.icon; txt = hl.label; if (cs.hold === 'away_indefinitely') kl = 'HOLD · ∞'; }
+      else if (cs.hold === 'temp') { ic = 'mdi:hand-back-right-outline'; txt = lccEsc(holdT || '—'); }
       else { ic = 'mdi:hand-back-right-outline'; txt = lccEsc(this._cap(cs.hold)); }
       const copts = [`<option value="${LCC_SCHEDULE}"${cs.hold ? '' : ' selected'}>${cs.hold ? 'Resume schedule' : 'Schedule'}${cs.sched ? ` · ${lccEsc(slab)}` : ''}</option>`];
       if (cs.hold && !hl) copts.push(`<option value="__hold__" selected disabled>${cs.hold === 'temp' ? `Hold · ${lccEsc(holdT || '—')}` : lccEsc(this._cap(cs.hold))}</option>`);
@@ -560,7 +563,7 @@ class LinwoodClimateCard extends HTMLElement {
         const lab = LCC_COMFORT[o].label, isSched = !cs.hold && o === sk, sel = hk === o;
         copts.push(`<option value="${o}"${sel ? ' selected' : ''}${isSched ? ' disabled' : ''}>${lab} — ${isSched ? 'running on schedule' : 'hold until next activity'}</option>`);
       });
-      fourth = `<label class="stat sel${cs.hold ? ' act' : ''}"><span class="k">COMFORT<ha-icon icon="mdi:chevron-down"></ha-icon></span><span class="sv svf"><ha-icon class="svi" icon="${ic}"></ha-icon><span class="svt">${txt}</span></span>
+      fourth = `<label class="stat sel${cs.hold ? ' act' : ''}" title="Comfort setting"><span class="k">${kl}<ha-icon icon="mdi:chevron-down"></ha-icon></span><span class="sv svf"><ha-icon class="svi" icon="${ic}"></ha-icon><span class="svt">${txt}</span></span>
       <select class="msel csel" aria-label="Comfort setting">${copts.join('')}</select></label>`;
     } else if (cf) {
       // a comfort select (ecobee Home / Sleep / Away); "unknown" means the thermostat is simply running its schedule
