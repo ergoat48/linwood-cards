@@ -8,6 +8,7 @@ const FILES = [
   'linwood-tv-card.js',
   'linwood-climate-card.js',
   'linwood-security-card.js',
+  'linwood-weather-card.js',
   'linwood-calendar-card.js',
   'linwood-plant-card.js',
   'linwood-jump-bar.js',

@@ -6,7 +6,7 @@ GlobalRegistrator.register({ url: 'http://localhost:8123/' });
 
 const expected = [
   'linwood-light-card', 'linwood-switch-card', 'linwood-garage-card', 'linwood-appletv-card', 'linwood-theater-card',
-  'linwood-tv-card', 'linwood-climate-card', 'linwood-security-card', 'linwood-calendar-card', 'linwood-plant-card', 'linwood-grow-lights-card',
+  'linwood-tv-card', 'linwood-climate-card', 'linwood-security-card', 'linwood-weather-card', 'linwood-calendar-card', 'linwood-plant-card', 'linwood-grow-lights-card',
 ];
 
 const results = await (await import('../src/index.js')).default;
@@ -27,6 +27,7 @@ for (const t of expected) {
 // Every card must be able to take a config without throwing.
 const configs = {
   'linwood-climate-card': { entity: 'climate.x', rooms: [{ name: 'X', temperature: 'sensor.x', motion: 'binary_sensor.x' }] },
+  'linwood-weather-card': { entity: 'weather.x' },
   'linwood-security-card': { sensors: [{ name: 'X', motion: 'binary_sensor.x', door: 'cover.x' }] },
   'linwood-plant-card': { plants: [{ entity: 'input_datetime.x', name: 'X' }] },
   'linwood-theater-card': { receiver: 'media_player.x' },

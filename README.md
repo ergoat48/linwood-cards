@@ -48,6 +48,7 @@ SHA, every device runs one consistent set, and jsDelivr / browsers can cache the
 | `src/linwood-tv-card.js` | 1.0.1 | bedroom: LG G4, Sonos soundbar, Apple TV |
 | `src/linwood-climate-card.js` | 1.13.2 | dial thermostat with safe per-mode setpoint limits + Rooms panel (temperature rail, per-room sparklines, presence, which room the thermostat targets) |
 | `src/linwood-security-card.js` | 1.0.1 | motion radar, room tiles, swimlane timeline, activity feed |
+| `src/linwood-weather-card.js` | 1.0.0 | live sky scene, current conditions, hourly temperature curve (sunset / sunrise / midnight marked) and weekly range bars |
 | `src/linwood-calendar-card.js` | 1.1.0 | week strip + agenda |
 | `src/linwood-plant-card.js` | 3.8.0 | plant care tracker + grow lights card |
 | `src/linwood-jump-bar.js` | 1.0.1 | jump-to chips on the Plant Care view |
