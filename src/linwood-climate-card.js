@@ -1,4 +1,9 @@
-/* Linwood Climate Card v1.14.1 — custom dial thermostat for Home Assistant
+/* Linwood Climate Card v1.15.0 — custom dial thermostat for Home Assistant
+ * v1.15.0: `auto_mix:` adds an "Auto Air Mixing" row (same style as Auto Home/Away) with an on/off switch for an
+ *         automation that runs the blower when rooms drift apart. `{ entity:, active:, spread:, paused:, threshold: }`:
+ *         `active` = the automation is running the fan now, `spread` = warmest minus coldest room, `paused` = an entity
+ *         that is on while the automation stands down (e.g. the Away hold), `threshold` = the spread it starts at (3).
+ *         Status: "1.8° apart · mixes at 3°", "Fan running · 4.9° apart" (spinning fan), "Paused while Away", "Off".
  * v1.14.1: shorter Auto Home/Away status lines, so they fit on a phone.
  * v1.14.0: `auto_away:` adds an "Auto Home/Away" row under the tiles with an on/off switch for a presence automation
  *         (Away hold when you leave, schedule when you head home). `auto_away: input_boolean.x` or
@@ -285,17 +290,39 @@ class LinwoodClimateCard extends HTMLElement {
       .catch((e) => { console.warn('[Linwood climate] ecobee preset failed, using HomeKit', e); return sel(); }) : sel())
       .catch((err) => this._toast(`Comfort: ${err.message || err}`));
   }
-  /* `auto_away:` → { id, on, active, dis, dist, unit }; null when not configured. */
-  _autoAway() {
-    const c = this._config.auto_away;
-    const cfg = typeof c === 'string' ? { entity: c } : c && typeof c === 'object' ? c : null;
-    const s = cfg && this._st(cfg.entity);
+  /* An on/off row config (`auto_away:` / `auto_mix:`): an entity id, or { entity:, ...extra entities }. */
+  _rowCfg(key) {
+    const c = this._config[key];
+    return typeof c === 'string' ? { entity: c } : c && typeof c === 'object' ? c : null;
+  }
+  /* → { id, on, dis, active, cfg }; null when not configured or the entity is missing. */
+  _switchRow(key) {
+    const cfg = this._rowCfg(key), s = cfg && this._st(cfg.entity);
     if (!s) return null;
-    const as = this._st(cfg.active), ds = this._st(cfg.distance);
-    return {
-      id: cfg.entity, on: s.state === 'on', dis: s.state === 'unavailable' || s.state === 'unknown',
-      active: !!as && as.state === 'on', dist: this._num(cfg.distance), unit: ds ? ds.attributes.unit_of_measurement || '' : '',
-    };
+    const as = this._st(cfg.active);
+    return { cfg, id: cfg.entity, on: s.state === 'on', dis: s.state === 'unavailable' || s.state === 'unknown', active: !!as && as.state === 'on' };
+  }
+  /* `auto_away:` → adds dist / unit from `distance:` (a Proximity sensor). */
+  _autoAway() {
+    const r = this._switchRow('auto_away');
+    if (!r) return null;
+    const ds = this._st(r.cfg.distance);
+    return Object.assign(r, { dist: this._num(r.cfg.distance), unit: ds ? ds.attributes.unit_of_measurement || '' : '' });
+  }
+  /* `auto_mix:` → adds spread (`spread:`, warmest minus coldest room), paused (`paused:` on, e.g. the Away hold) and
+   * the threshold the automation starts at (`threshold:`, default 3). */
+  _autoMix() {
+    const r = this._switchRow('auto_mix');
+    if (!r) return null;
+    const ps = this._st(r.cfg.paused), th = Number(r.cfg.threshold);
+    return Object.assign(r, { spread: this._num(r.cfg.spread), paused: !!ps && ps.state === 'on', th: isFinite(th) && th > 0 ? th : 3 });
+  }
+  _rowHtml(act, label, r, icon, sub, chip) {
+    return `<button class="aa${r.on ? ' on' : ''}${r.on && r.active ? ' act' : ''}" data-act="${act}" role="switch" aria-checked="${r.on}" aria-label="${label}" ${r.dis ? 'disabled' : ''}>
+      <span class="aai">${icon}</span>
+      <span class="aam"><span class="aat">${label}</span><span class="aas">${sub}</span></span>${chip || ''}
+      <span class="sw${r.on ? ' on' : ''}"><span class="knobsw"></span></span>
+    </button>`;
   }
   _autoAwayHtml(aa) {
     let sub;
@@ -305,11 +332,19 @@ class LinwoodClimateCard extends HTMLElement {
     else sub = 'Away when you leave';
     const dist = aa.on && aa.active && aa.dist != null && aa.dist >= 0.1
       ? `<span class="aad"><ha-icon icon="mdi:map-marker-distance"></ha-icon>${this._fmt(Math.round(aa.dist * 10) / 10)}${aa.unit ? ' ' + lccEsc(aa.unit) : ''}</span>` : '';
-    return `<button class="aa${aa.on ? ' on' : ''}${aa.on && aa.active ? ' act' : ''}" data-act="autoaway" role="switch" aria-checked="${aa.on}" aria-label="Auto Home/Away" ${aa.dis ? 'disabled' : ''}>
-      <span class="aai"><ha-icon icon="${aa.on && aa.active ? 'mdi:home-export-outline' : 'mdi:home-switch-outline'}"></ha-icon></span>
-      <span class="aam"><span class="aat">Auto Home/Away</span><span class="aas">${sub}</span></span>${dist}
-      <span class="sw${aa.on ? ' on' : ''}"><span class="knobsw"></span></span>
-    </button>`;
+    return this._rowHtml('autoaway', 'Auto Home/Away', aa, `<ha-icon icon="${aa.on && aa.active ? 'mdi:home-export-outline' : 'mdi:home-switch-outline'}"></ha-icon>`, sub, dist);
+  }
+  _autoMixHtml(am) {
+    const gap = am.spread != null ? `${this._fmt(Math.round(am.spread * 10) / 10)}° apart` : '';
+    let sub;
+    if (am.dis) sub = 'Offline';
+    else if (!am.on) sub = am.active ? 'Off · fan back to Auto' : 'Off · fan on Auto';
+    else if (am.active) sub = `Fan running${gap ? ' · ' + gap : ''}`;
+    else if (am.paused) sub = 'Paused while Away';
+    else sub = `${gap ? gap + ' · ' : ''}mixes at ${this._fmt(am.th)}°`;
+    const run = am.on && am.active;
+    const icon = `<ha-icon icon="${run ? 'mdi:fan' : am.on ? 'mdi:fan-auto' : 'mdi:fan-off'}"${run ? ' class="spin"' : ''}></ha-icon>`;
+    return this._rowHtml('automix', 'Auto Air Mixing', am, icon, sub, '');
   }
   _num(id) { const s = this._st(id); const v = s ? parseFloat(s.state) : NaN; return isNaN(v) ? null : v; }
   _unit() { return (this._hass.config && this._hass.config.unit_system && this._hass.config.unit_system.temperature) || '°'; }
@@ -417,8 +452,7 @@ class LinwoodClimateCard extends HTMLElement {
     const ids = [c.weather, c.humidity, c.humidifier, c.comfort, c.room && c.room.temperature, c.room && c.room.humidity];
     this._rooms.forEach((r) => ids.push(r.temperature, r.humidity, r.motion, r.occupancy, r.battery));
     ids.push(c.sleep, c.pin, c.pin_timer);
-    const aac = typeof c.auto_away === 'string' ? { entity: c.auto_away } : c.auto_away || {};
-    ids.push(aac.entity, aac.active, aac.distance);
+    ['auto_away', 'auto_mix'].forEach((k) => { const rc = this._rowCfg(k) || {}; ids.push(rc.entity, rc.active, rc.distance, rc.spread, rc.paused); });
     const hd = this._st(c.hold);
     parts.push(hd ? String(hd.attributes.preset_mode) : '-');
     const tg = this._st(c.targeting);
@@ -653,7 +687,7 @@ class LinwoodClimateCard extends HTMLElement {
         <div class="rs">${dis ? 'Offline' : on ? 'Running' : 'Off'}</div></div>`);
     }
 
-    const aa = this._autoAway();
+    const aa = this._autoAway(), am = this._autoMix();
     const fxClass = `fx-${look.fx}`;
     return `
 <div class="card ${fxClass}" style="--c1:${c[0]};--c2:${c[1]};--c3:${c[2]}">
@@ -702,6 +736,7 @@ class LinwoodClimateCard extends HTMLElement {
     ${fourth}
   </div>
   ${aa ? this._autoAwayHtml(aa) : ''}
+  ${am ? this._autoMixHtml(am) : ''}
   ${roomsPanel}
   ${reads.length ? `<div class="reads">${reads.join('')}</div>` : ''}
 </div>`;
@@ -1061,17 +1096,27 @@ class LinwoodClimateCard extends HTMLElement {
       }
       case 'autoaway': {
         const aa = this._autoAway();
-        if (!aa || aa.dis) return;
-        const dom = aa.id.split('.')[0];
-        this._hass.callService(dom === 'input_boolean' || dom === 'switch' ? dom : 'homeassistant', aa.on ? 'turn_off' : 'turn_on', { entity_id: aa.id })
-          .then(() => this._toast(aa.on ? `Auto Home/Away off${aa.active ? ' — Away hold cleared' : ''}` : 'Auto Home/Away on'))
-          .catch((err) => this._toast(`Auto Home/Away: ${err.message || err}`));
+        if (aa) this._flip(aa, 'Auto Home/Away', aa.on && aa.active ? ' — Away hold cleared' : '');
+        break;
+      }
+      case 'automix': {
+        const am = this._autoMix();
+        if (am) this._flip(am, 'Auto Air Mixing', am.on && am.active ? ' — fan back to Auto' : '');
         break;
       }
       case 'info': if (val) this._moreInfo(val); break;
       case 'more': this._moreInfo(this._config.entity); break;
       default: break;
     }
+  }
+
+  /* switch an on/off row's entity; `offNote` is added to the toast when turning it off */
+  _flip(r, label, offNote) {
+    if (r.dis) return;
+    const dom = r.id.split('.')[0];
+    this._hass.callService(dom === 'input_boolean' || dom === 'switch' ? dom : 'homeassistant', r.on ? 'turn_off' : 'turn_on', { entity_id: r.id })
+      .then(() => this._toast(r.on ? `${label} off${offNote}` : `${label} on`))
+      .catch((err) => this._toast(`${label}: ${err.message || err}`));
   }
 
   _commit(delay) {
@@ -1224,6 +1269,8 @@ ha-icon { --mdc-icon-size:18px; display:inline-flex; }
 .aad { flex:none; display:inline-flex; align-items:center; gap:3px; padding:3px 8px; border-radius:8px; font-size:12px; font-weight:700; color:#e5e7eb; background:rgba(255,255,255,0.06); white-space:nowrap; font-variant-numeric:tabular-nums; }
 .aad ha-icon { --mdc-icon-size:13px; color:#8b919c; }
 .aa .sw { flex:none; display:block; margin:0; }
+.aa + .aa { margin-top:8px; }
+.aai ha-icon.spin { animation:spin 2.4s linear infinite; }
 @container lccard (max-width: 360px) { .aad { display:none; } }
 /* Rooms panel */
 .roomsbox { margin-top:16px; padding-top:14px; border-top:1px solid rgba(255,255,255,0.07); container-type:inline-size; container-name:rooms; }

@@ -26,7 +26,7 @@ for (const t of expected) {
 }
 // Every card must be able to take a config without throwing.
 const configs = {
-  'linwood-climate-card': { entity: 'climate.x', rooms: [{ name: 'X', temperature: 'sensor.x', motion: 'binary_sensor.x' }], auto_away: { entity: 'input_boolean.x', active: 'input_boolean.y', distance: 'sensor.y' } },
+  'linwood-climate-card': { entity: 'climate.x', rooms: [{ name: 'X', temperature: 'sensor.x', motion: 'binary_sensor.x' }], auto_away: { entity: 'input_boolean.x', active: 'input_boolean.y', distance: 'sensor.y' }, auto_mix: { entity: 'input_boolean.z', active: 'input_boolean.w', spread: 'sensor.z', paused: 'input_boolean.y' } },
   'linwood-weather-card': { entity: 'weather.x' },
   'linwood-security-card': { sensors: [{ name: 'X', motion: 'binary_sensor.x', door: 'cover.x' }] },
   'linwood-plant-card': { plants: [{ entity: 'input_datetime.x', name: 'X' }] },
