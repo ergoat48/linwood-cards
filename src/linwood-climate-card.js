@@ -1,4 +1,10 @@
-/* Linwood Climate Card v1.8.0 — custom dial thermostat for Home Assistant
+/* Linwood Climate Card v1.9.0 — custom dial thermostat for Home Assistant
+ * v1.9.0: safe setpoint limits per mode. The dial and +/- used the thermostat's full HomeKit range (45–92°) in every
+ *         mode, so a tap near the bottom of the arc in Cool sent ~55° — ecobee rejects that as equipment-damaging.
+ *         `limits:` (default heat 50–80°, cool 65–90°; `limits: false` turns it off) now bounds the dial in Heat and
+ *         Cool, the low knob to the heat range and the high knob to the cool range in Heat/Cool, and every setpoint is
+ *         clamped again just before it is sent. Rooms header names the averaged rooms ("Averaging Bedroom + Hallway")
+ *         when there are two; a room with `average: false` shows "Not in average" while other rooms are averaged.
  * v1.8.0: Resume (header chip and "Resume schedule") goes through the ecobee cloud when `hold:` is an ecobee entity:
  *         ecobee.resume_program (resume_all) clears every hold and refreshes that entity at once, so the Comfort tile
  *         switches from "Hold" to "Schedule" in seconds instead of after the next ~3 min cloud poll. Falls back to
@@ -222,7 +228,39 @@ class LinwoodClimateCard extends HTMLElement {
   _canResume() { return !!(this._ecobeeHold() || this._st(this._config.resume)); }
   _num(id) { const s = this._st(id); const v = s ? parseFloat(s.state) : NaN; return isNaN(v) ? null : v; }
   _unit() { return (this._hass.config && this._hass.config.unit_system && this._hass.config.unit_system.temperature) || '°'; }
-  _range(a) { return [a.min_temp != null ? a.min_temp : 45, a.max_temp != null ? a.max_temp : 95]; }
+  /* Hardware range from the entity, narrowed by `limits:` for the current mode (Heat → heat range, Cool → cool range,
+   * Heat/Cool → heat min to cool max) so the dial can't reach setpoints that work the equipment too hard. */
+  _range(a) {
+    const hw = [a.min_temp != null ? a.min_temp : 45, a.max_temp != null ? a.max_temp : 95];
+    const lim = this._limits();
+    if (!lim) return hw;
+    const st = this._st(this._config.entity), mode = this._config.preview_mode || (st && st.state);
+    let r = null;
+    if (mode === 'heat') r = lim.heat;
+    else if (mode === 'cool') r = lim.cool;
+    else if (mode === 'heat_cool' || mode === 'auto') r = [lim.heat[0], lim.cool[1]];
+    return r ? this._clip(hw, r) : hw;
+  }
+  /* `limits:` → { heat:[min,max], cool:[min,max] } with defaults for anything missing; null when `limits: false`. */
+  _limits() {
+    const c = this._config.limits;
+    if (c === false) return null;
+    const pair = (v, d) => (Array.isArray(v) && v.length === 2 && v.every((x) => typeof x === 'number') && v[0] < v[1] ? v : d);
+    const f = this._unit() === '°C';
+    return {
+      heat: pair(c && c.heat, f ? [10, 27] : [50, 80]),
+      cool: pair(c && c.cool, f ? [18, 32] : [65, 90]),
+    };
+  }
+  /* intersect two [lo, hi] ranges; if they don't overlap, the narrower `r` wins */
+  _clip(hw, r) { const lo = Math.max(hw[0], r[0]), hi = Math.min(hw[1], r[1]); return lo < hi ? [lo, hi] : r; }
+  /* where one setpoint may go: single → the mode's range; Heat/Cool low knob → heat range, high knob → cool range */
+  _keyRange(a, key) {
+    const lim = this._limits(), base = this._range(a);
+    if (!lim || key === 'single') return base;
+    return this._clip(base, key === 'low' ? lim.heat : lim.cool);
+  }
+  _clampKey(a, key, v) { const [lo, hi] = this._keyRange(a, key); return Math.min(hi, Math.max(lo, v)); }
   _step(a) { return a.target_temp_step || (this._unit() === '°C' ? 0.5 : 1); }
   _dual(st) { return st.state === 'heat_cool' && st.attributes.target_temp_low != null && st.attributes.target_temp_high != null; }
   _fmt(v) { if (v == null || isNaN(v)) return '--'; const r = Math.round(v * 10) / 10; return Number.isInteger(r) ? String(r) : r.toFixed(1); }
@@ -580,7 +618,9 @@ class LinwoodClimateCard extends HTMLElement {
         meta = `${ic}<span class="tl">Targeting </span><b style="color:${r.color}">${lccEsc(r.name || 'Room')}</b>${why}`;
       } else {
         const all = tg.rooms.length === this._rooms.length && tg.count === this._rooms.length;
-        meta = `${ic}<span class="tl">Averaging </span><b>${all ? 'all rooms' : tg.count + ' rooms'}</b>${why}`;
+        const two = !all && tg.count === 2 && tg.rooms.length === 2;
+        const what = all ? 'all rooms' : two ? tg.rooms.map((r) => `<span style="color:${r.color}">${lccEsc(r.name || 'Room')}</span>`).join(' + ') : tg.count + ' rooms';
+        meta = `${ic}<span class="tl">Averaging </span><b>${what}</b>${why}`;
       }
     }
     const pin = this._pin();
@@ -676,6 +716,7 @@ class LinwoodClimateCard extends HTMLElement {
     const bits = [], on = this._isTarget(tg, r);
     const pinned = this._pin(), isPin = !!(pinned && pinned.room && (r.name || '').toLowerCase() === pinned.room.toLowerCase());
     if (on || isPin) bits.push(`<span class="tg"><ha-icon icon="mdi:${isPin ? 'pin' : 'crosshairs-gps'}"></ha-icon>${isPin ? 'Pinned' : tg.count > 1 ? 'In average' : 'Target'}</span>`);
+    else if (r.average === false && tg && tg.known && tg.count > 1) bits.push('<span class="na"><ha-icon icon="mdi:crosshairs-off"></ha-icon>Not in average</span>');
     if (pres) bits.push(`<span class="p">${pres}</span>`);
     if (x.hum != null) bits.push(`<span class="h"><ha-icon icon="mdi:water-percent"></ha-icon>${Math.round(x.hum)}%</span>`);
     if (x.bat != null && x.bat <= (r.battery_low || 20)) bits.push(`<span class="warn"><ha-icon icon="mdi:battery-alert-variant-outline"></ha-icon>${Math.round(x.bat)}%</span>`);
@@ -821,7 +862,7 @@ class LinwoodClimateCard extends HTMLElement {
     const st = this._st(this._config.entity);
     if (!st) return;
     const key = this._dual(st) ? this._side : 'single';
-    let v = this._valFromPointer(ev, st);
+    let v = this._clampKey(st.attributes, key, this._valFromPointer(ev, st));
     if (key === 'low') v = Math.min(v, this._targets(st).high - this._step(st.attributes) * 2);
     if (key === 'high') v = Math.max(v, this._targets(st).low + this._step(st.attributes) * 2);
     this._pending = { key, value: v, t: Date.now() };
@@ -857,6 +898,7 @@ class LinwoodClimateCard extends HTMLElement {
         if (base == null) return;
         const [mn, mx] = this._range(a), step = this._step(a);
         let v = Math.min(mx, Math.max(mn, Math.round((base + Number(val) * step) / step) * step));
+        v = this._clampKey(a, key, v);
         if (key === 'low') v = Math.min(v, t.high - step * 2);
         if (key === 'high') v = Math.max(v, t.low + step * 2);
         this._pending = { key, value: v, t: Date.now() };
@@ -913,10 +955,12 @@ class LinwoodClimateCard extends HTMLElement {
       this._timer = null;
       const st = this._st(this._config.entity), p = this._pending;
       if (!st || !p) return;
-      if (p.key === 'single') this._call('climate', 'set_temperature', { temperature: p.value });
+      // last line of defence: nothing outside the safe range for this mode reaches the thermostat
+      const a = st.attributes;
+      if (p.key === 'single') this._call('climate', 'set_temperature', { temperature: this._clampKey(a, 'single', p.value) });
       else {
         const t = this._targets(st);
-        this._call('climate', 'set_temperature', { target_temp_low: t.low, target_temp_high: t.high });
+        this._call('climate', 'set_temperature', { target_temp_low: this._clampKey(a, 'low', t.low), target_temp_high: this._clampKey(a, 'high', t.high) });
       }
     }, delay);
   }
@@ -1088,6 +1132,7 @@ ha-icon { --mdc-icon-size:18px; display:inline-flex; }
 .room.off .rsub .p { color:#f87171; }
 .rsub .warn { display:inline-flex; align-items:center; color:#fbbf24; }
 .rsub .tg { display:inline-flex; align-items:center; gap:2px; color:var(--rc); font-weight:700; }
+.rsub .na { display:inline-flex; align-items:center; gap:2px; color:#6b7280; }
 .room.tgt { border-color:color-mix(in srgb, var(--rc) 38%, transparent); }
 .room.tgt.live { border-color:color-mix(in srgb, #4ade80 30%, transparent); }
 .rmeta.tgt { color:#8b919c; }
