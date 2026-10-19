@@ -1,4 +1,8 @@
-/* Linwood Climate Card v1.13.2 — custom dial thermostat for Home Assistant
+/* Linwood Climate Card v1.14.0 — custom dial thermostat for Home Assistant
+ * v1.14.0: `auto_away:` adds an "Auto Home/Away" row under the tiles with an on/off switch for a presence automation
+ *         (Away hold when you leave, schedule when you head home). `auto_away: input_boolean.x` or
+ *         `{ entity:, active:, distance: }` — `active` (a boolean the automation turns on while its Away hold runs)
+ *         and `distance` (a Proximity distance sensor) only feed the status line ("Holding Away · 4.2 mi from home").
  * v1.13.2: the Comfort menu leaves out the comfort the schedule is running (on the Home schedule it offers only Sleep
  *         and Away holds); "Schedule · Home" / "Resume schedule · Home" already covers it.
  * v1.13.1: the Comfort tile's small label carries the status — SCHEDULE / HOLD — and the value line just the comfort
@@ -280,6 +284,32 @@ class LinwoodClimateCard extends HTMLElement {
       .catch((e) => { console.warn('[Linwood climate] ecobee preset failed, using HomeKit', e); return sel(); }) : sel())
       .catch((err) => this._toast(`Comfort: ${err.message || err}`));
   }
+  /* `auto_away:` → { id, on, active, dis, dist, unit }; null when not configured. */
+  _autoAway() {
+    const c = this._config.auto_away;
+    const cfg = typeof c === 'string' ? { entity: c } : c && typeof c === 'object' ? c : null;
+    const s = cfg && this._st(cfg.entity);
+    if (!s) return null;
+    const as = this._st(cfg.active), ds = this._st(cfg.distance);
+    return {
+      id: cfg.entity, on: s.state === 'on', dis: s.state === 'unavailable' || s.state === 'unknown',
+      active: !!as && as.state === 'on', dist: this._num(cfg.distance), unit: ds ? ds.attributes.unit_of_measurement || '' : '',
+    };
+  }
+  _autoAwayHtml(aa) {
+    let sub;
+    if (aa.dis) sub = 'Offline';
+    else if (!aa.on) sub = aa.active ? 'Off · clearing the Away hold' : 'Off · the ecobee schedule runs as usual';
+    else if (aa.active) sub = 'Holding Away · back to schedule when you head home';
+    else sub = 'On · Away when you leave, schedule when you head home';
+    const dist = aa.on && aa.active && aa.dist != null && aa.dist >= 0.1
+      ? `<span class="aad"><ha-icon icon="mdi:map-marker-distance"></ha-icon>${this._fmt(Math.round(aa.dist * 10) / 10)}${aa.unit ? ' ' + lccEsc(aa.unit) : ''}</span>` : '';
+    return `<button class="aa${aa.on ? ' on' : ''}${aa.on && aa.active ? ' act' : ''}" data-act="autoaway" role="switch" aria-checked="${aa.on}" aria-label="Auto Home/Away" ${aa.dis ? 'disabled' : ''}>
+      <span class="aai"><ha-icon icon="${aa.on && aa.active ? 'mdi:home-export-outline' : 'mdi:home-switch-outline'}"></ha-icon></span>
+      <span class="aam"><span class="aat">Auto Home/Away</span><span class="aas">${sub}</span></span>${dist}
+      <span class="sw${aa.on ? ' on' : ''}"><span class="knobsw"></span></span>
+    </button>`;
+  }
   _num(id) { const s = this._st(id); const v = s ? parseFloat(s.state) : NaN; return isNaN(v) ? null : v; }
   _unit() { return (this._hass.config && this._hass.config.unit_system && this._hass.config.unit_system.temperature) || '°'; }
   /* Hardware range from the entity, narrowed by `limits:` for the current mode (Heat → heat range, Cool → cool range,
@@ -386,6 +416,8 @@ class LinwoodClimateCard extends HTMLElement {
     const ids = [c.weather, c.humidity, c.humidifier, c.comfort, c.room && c.room.temperature, c.room && c.room.humidity];
     this._rooms.forEach((r) => ids.push(r.temperature, r.humidity, r.motion, r.occupancy, r.battery));
     ids.push(c.sleep, c.pin, c.pin_timer);
+    const aac = typeof c.auto_away === 'string' ? { entity: c.auto_away } : c.auto_away || {};
+    ids.push(aac.entity, aac.active, aac.distance);
     const hd = this._st(c.hold);
     parts.push(hd ? String(hd.attributes.preset_mode) : '-');
     const tg = this._st(c.targeting);
@@ -620,6 +652,7 @@ class LinwoodClimateCard extends HTMLElement {
         <div class="rs">${dis ? 'Offline' : on ? 'Running' : 'Off'}</div></div>`);
     }
 
+    const aa = this._autoAway();
     const fxClass = `fx-${look.fx}`;
     return `
 <div class="card ${fxClass}" style="--c1:${c[0]};--c2:${c[1]};--c3:${c[2]}">
@@ -667,6 +700,7 @@ class LinwoodClimateCard extends HTMLElement {
     <button class="stat${fanOn ? ' act' : ''}" data-act="fan" ${fanModes.length ? '' : 'disabled'}><span class="k">FAN<ha-icon icon="mdi:fan${fanOn ? '' : '-off'}"${fanOn ? ' class="spin"' : ''}></ha-icon></span><span class="sv">${fanModes.length ? (fanOn ? 'On' : 'Auto') : '—'}</span></button>
     ${fourth}
   </div>
+  ${aa ? this._autoAwayHtml(aa) : ''}
   ${roomsPanel}
   ${reads.length ? `<div class="reads">${reads.join('')}</div>` : ''}
 </div>`;
@@ -1024,6 +1058,15 @@ class LinwoodClimateCard extends HTMLElement {
           .catch((err) => this._toast(`Resume: ${err.message || err}`));
         break;
       }
+      case 'autoaway': {
+        const aa = this._autoAway();
+        if (!aa || aa.dis) return;
+        const dom = aa.id.split('.')[0];
+        this._hass.callService(dom === 'input_boolean' || dom === 'switch' ? dom : 'homeassistant', aa.on ? 'turn_off' : 'turn_on', { entity_id: aa.id })
+          .then(() => this._toast(aa.on ? `Auto Home/Away off${aa.active ? ' — Away hold cleared' : ''}` : 'Auto Home/Away on'))
+          .catch((err) => this._toast(`Auto Home/Away: ${err.message || err}`));
+        break;
+      }
       case 'info': if (val) this._moreInfo(val); break;
       case 'more': this._moreInfo(this._config.entity); break;
       default: break;
@@ -1166,6 +1209,21 @@ ha-icon { --mdc-icon-size:18px; display:inline-flex; }
 .resume:hover { background:rgba(255,255,255,0.09); }
 .resume:active { transform:scale(.96); }
 @container lccard (max-width: 360px) { .resume span { display:none; } .resume { padding:0 8px; } }
+/* Auto Home/Away row */
+.aa { display:flex; align-items:center; gap:12px; width:100%; margin-top:10px; padding:10px 12px 10px 10px; border-radius:18px; background:rgba(255,255,255,0.045); border:1px solid rgba(255,255,255,0.06); text-align:left; transition:background .15s, border-color .3s; }
+.aa:hover:not(:disabled) { background:rgba(255,255,255,0.075); }
+.aa.act { border-color:color-mix(in srgb, #2dd4bf 35%, transparent); background:linear-gradient(100deg, color-mix(in srgb, #2dd4bf 10%, transparent), rgba(255,255,255,0.03) 60%); }
+.aai { flex:none; width:36px; height:36px; border-radius:12px; display:flex; align-items:center; justify-content:center; color:#8b919c; background:rgba(255,255,255,0.05); transition:color .2s, background .2s; }
+.aai ha-icon { --mdc-icon-size:19px; }
+.aa.on .aai { color:#2dd4bf; background:color-mix(in srgb, #2dd4bf 14%, transparent); }
+.aam { flex:1; display:flex; flex-direction:column; gap:2px; min-width:0; }
+.aat { font-size:14.5px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.aas { font-size:12px; color:#8b919c; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.aa.act .aas { color:#5eead4; }
+.aad { flex:none; display:inline-flex; align-items:center; gap:3px; padding:3px 8px; border-radius:8px; font-size:12px; font-weight:700; color:#e5e7eb; background:rgba(255,255,255,0.06); white-space:nowrap; font-variant-numeric:tabular-nums; }
+.aad ha-icon { --mdc-icon-size:13px; color:#8b919c; }
+.aa .sw { flex:none; display:block; margin:0; }
+@container lccard (max-width: 360px) { .aad { display:none; } }
 /* Rooms panel */
 .roomsbox { margin-top:16px; padding-top:14px; border-top:1px solid rgba(255,255,255,0.07); container-type:inline-size; container-name:rooms; }
 .rhead { display:flex; align-items:center; gap:10px; min-height:30px; }
