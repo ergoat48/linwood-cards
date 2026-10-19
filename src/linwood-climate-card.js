@@ -1,4 +1,9 @@
-/* Linwood Climate Card v1.11.0 — custom dial thermostat for Home Assistant
+/* Linwood Climate Card v1.12.0 — custom dial thermostat for Home Assistant
+ * v1.12.0: picking Home / Sleep / Away in the Comfort dropdown now sets the hold through the ecobee cloud (`hold:`)
+ *         with climate.set_preset_mode, which follows the thermostat's own Hold Action preference — so, like choosing
+ *         a comfort setting in the ecobee app, the hold lasts until the next scheduled activity instead of the
+ *         indefinite hold the HomeKit select sets. The menu says so ("Sleep — until next scheduled change"). Falls back
+ *         to the `comfort:` select when the cloud isn't configured or the call fails.
  * v1.11.0: the Rooms header picker is now a "Target room" selector instead of a pin. It reads "Target room · Auto ·
  *         Office" (what automatic targeting is following right now) or "Target room · Office · 2 h 19 m left" when a
  *         room is chosen by hand; the menu lists "Auto — follow motion & sleep hours" and each room "for the next 3 h".
@@ -234,6 +239,25 @@ class LinwoodClimateCard extends HTMLElement {
     return reg && reg.platform && reg.platform !== 'ecobee' ? null : id;
   }
   _canResume() { return !!(this._ecobeeHold() || this._st(this._config.resume)); }
+  /* The `hold:` preset matching a comfort option ("sleep" → "sleep"), when the ecobee cloud can set it. */
+  _cloudPreset(opt) {
+    const eco = this._ecobeeHold(), hs = eco && this._st(eco);
+    const pm = hs && (hs.attributes.preset_modes || []).find((p) => p.toLowerCase() === String(opt).toLowerCase());
+    return pm ? { eco, pm } : null;
+  }
+  /* Hold a comfort setting until the next scheduled activity. Through the ecobee cloud, set_preset_mode uses the
+   * thermostat's Hold Action preference (Until next activity / Ask me → next transition), the same as the ecobee app;
+   * the HomeKit select would set an indefinite hold, so it is only the fallback. */
+  _setComfort(opt) {
+    const lab = (LCC_COMFORT[opt] || {}).label || this._cap(opt);
+    const sel = () => this._hass.callService('select', 'select_option', { entity_id: this._config.comfort, option: opt })
+      .then(() => this._toast(`${lab} hold set`));
+    const cp = this._cloudPreset(opt);
+    (cp ? this._hass.callService('climate', 'set_preset_mode', { entity_id: cp.eco, preset_mode: cp.pm })
+      .then(() => this._toast(`${lab} until the next scheduled change`))
+      .catch((e) => { console.warn('[Linwood climate] ecobee preset failed, using HomeKit', e); return sel(); }) : sel())
+      .catch((err) => this._toast(`Comfort: ${err.message || err}`));
+  }
   _num(id) { const s = this._st(id); const v = s ? parseFloat(s.state) : NaN; return isNaN(v) ? null : v; }
   _unit() { return (this._hass.config && this._hass.config.unit_system && this._hass.config.unit_system.temperature) || '°'; }
   /* Hardware range from the entity, narrowed by `limits:` for the current mode (Heat → heat range, Cool → cool range,
@@ -519,7 +543,7 @@ class LinwoodClimateCard extends HTMLElement {
       const copts = [];
       if (canResume || !held) copts.push(`<option value="${LCC_SCHEDULE}"${held ? '' : ' selected'}${canResume ? '' : ' disabled'}>${held ? 'Resume schedule' : 'Schedule (no hold)'}</option>`);
       if (tempHold) copts.push(`<option value="__hold__" selected disabled>${lccEsc(holdTxt)}</option>`);
-      opts4.forEach((o) => copts.push(`<option value="${lccEsc(o)}"${o === cf.state ? ' selected' : ''}>${lccEsc((LCC_COMFORT[o] || {}).label || this._cap(o))}</option>`));
+      opts4.forEach((o) => copts.push(`<option value="${lccEsc(o)}"${o === cf.state ? ' selected' : ''}>${lccEsc((LCC_COMFORT[o] || {}).label || this._cap(o))}${this._cloudPreset(o) ? ' — until next scheduled change' : ''}</option>`));
       fourth = `<label class="stat sel${held ? ' act' : ''}"><span class="k">COMFORT<ha-icon icon="mdi:chevron-down"></ha-icon></span><span class="sv svf"><ha-icon class="svi" icon="${ic2}"></ha-icon><span class="svt">${tempHold ? `Hold${holdT ? ` <small>${lccEsc(holdT)}</small>` : ''}` : lccEsc(lab2)}</span></span>
       <select class="msel csel" aria-label="Comfort setting" ${dis ? 'disabled' : ''}>${copts.join('')}</select></label>`;
     } else {
@@ -816,10 +840,7 @@ class LinwoodClimateCard extends HTMLElement {
           const hs = this._st(this._config.hold);
           if (cf && ((cf.attributes.options || []).includes(cf.state) || (hs && hs.attributes.preset_mode === 'temp'))) this._act('resume');
         }
-        else if (cf && el.value !== cf.state) {
-          this._hass.callService('select', 'select_option', { entity_id: this._config.comfort, option: el.value })
-            .catch((err) => this._toast(`Comfort: ${err.message || err}`));
-        }
+        else if (cf && el.value !== cf.state) this._setComfort(el.value);
         return;
       }
       if (el && el.classList && el.classList.contains('msel')) {
@@ -939,9 +960,7 @@ class LinwoodClimateCard extends HTMLElement {
       case 'comfort': {
         const cf = this._st(this._config.comfort), op = (cf && cf.attributes.options) || [];
         if (!op.length) return;
-        const next = op[(op.indexOf(cf.state) + 1) % op.length];
-        this._hass.callService('select', 'select_option', { entity_id: this._config.comfort, option: next })
-          .catch((err) => this._toast(`Comfort: ${err.message || err}`));
+        this._setComfort(op[(op.indexOf(cf.state) + 1) % op.length]);
         break;
       }
       case 'resume': {
