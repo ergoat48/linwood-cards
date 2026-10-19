@@ -1,4 +1,8 @@
-/* Linwood Climate Card v1.9.0 — custom dial thermostat for Home Assistant
+/* Linwood Climate Card v1.10.0 — custom dial thermostat for Home Assistant
+ * v1.10.0: the room the thermostat is following gets a TARGET (or IN AVERAGE) pill next to its name, in the room's
+ *         colour, where the THERMOSTAT pill used to sit. The THERMOSTAT pill is gone (`thermostat: true` on a room is
+ *         now ignored), and a pinned room shows TARGET instead of a separate "Pinned" label under its name. The pin
+ *         picker in the Rooms header is unchanged. On narrow cards the tag stays and the room name shortens instead.
  * v1.9.0: safe setpoint limits per mode. The dial and +/- used the thermostat's full HomeKit range (45–92°) in every
  *         mode, so a tap near the bottom of the arc in Cool sent ~55° — ecobee rejects that as equipment-damaging.
  *         `limits:` (default heat 50–80°, cool 65–90°; `limits: false` turns it off) now bounds the dial in Heat and
@@ -715,8 +719,9 @@ class LinwoodClimateCard extends HTMLElement {
     }
     const bits = [], on = this._isTarget(tg, r);
     const pinned = this._pin(), isPin = !!(pinned && pinned.room && (r.name || '').toLowerCase() === pinned.room.toLowerCase());
-    if (on || isPin) bits.push(`<span class="tg"><ha-icon icon="mdi:${isPin ? 'pin' : 'crosshairs-gps'}"></ha-icon>${isPin ? 'Pinned' : tg.count > 1 ? 'In average' : 'Target'}</span>`);
-    else if (r.average === false && tg && tg.known && tg.count > 1) bits.push('<span class="na"><ha-icon icon="mdi:crosshairs-off"></ha-icon>Not in average</span>');
+    // the room the thermostat follows gets a pill tag next to its name; a pinned room is simply the target
+    const tag = isPin ? 'Target' : on ? (tg.count > 1 ? 'In average' : 'Target') : '';
+    if (!tag && r.average === false && tg && tg.known && tg.count > 1) bits.push('<span class="na"><ha-icon icon="mdi:crosshairs-off"></ha-icon>Not in average</span>');
     if (pres) bits.push(`<span class="p">${pres}</span>`);
     if (x.hum != null) bits.push(`<span class="h"><ha-icon icon="mdi:water-percent"></ha-icon>${Math.round(x.hum)}%</span>`);
     if (x.bat != null && x.bat <= (r.battery_low || 20)) bits.push(`<span class="warn"><ha-icon icon="mdi:battery-alert-variant-outline"></ha-icon>${Math.round(x.bat)}%</span>`);
@@ -729,7 +734,7 @@ class LinwoodClimateCard extends HTMLElement {
     }
     return `<button class="room ${pcls}${on ? ' tgt' : ''}" data-act="info" data-val="${lccEsc(r.temperature || r.motion)}" style="--rc:${r.color}">
       <span class="ric"><ha-icon icon="${r.icon || 'mdi:home-thermometer-outline'}"></ha-icon><i class="pdot"></i></span>
-      <span class="rmain"><span class="rname">${lccEsc(r.name || 'Room')}${r.thermostat ? '<em>Thermostat</em>' : ''}</span><span class="rsub">${bits.join('')}</span></span>
+      <span class="rmain"><span class="rname"><span class="rnm">${lccEsc(r.name || 'Room')}</span>${tag ? `<em class="rtag">${tag}</em>` : ''}</span><span class="rsub">${bits.join('')}</span></span>
       <span class="rspark">${this._spark(pts, t0, t1, lo, hi, r.color, x.i, x.temp)}</span>
       <span class="rtemp"><span class="rtv">${x.temp != null ? this._fmt(Math.round(x.temp * 10) / 10) : '--'}<small>°</small></span>${delta ? `<span class="rdl ${dcls}">${delta}</span>` : ''}</span>
     </button>`;
@@ -1123,7 +1128,8 @@ ha-icon { --mdc-icon-size:18px; display:inline-flex; }
 .room.off .pdot { background:#ef4444; }
 .rmain { display:flex; flex-direction:column; min-width:0; gap:3px; }
 .rname { display:flex; align-items:center; gap:7px; font-size:14.5px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.rname em { font-style:normal; font-size:9.5px; letter-spacing:.1em; text-transform:uppercase; font-weight:700; color:#8b919c; padding:2px 6px; border-radius:6px; background:rgba(255,255,255,0.06); }
+.rnm { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.rtag { flex:none; font-style:normal; font-size:9.5px; letter-spacing:.1em; text-transform:uppercase; font-weight:700; color:var(--rc); padding:2px 6px; border-radius:6px; background:color-mix(in srgb, var(--rc) 16%, transparent); }
 .rsub { display:flex; align-items:center; flex-wrap:wrap; gap:4px 10px; font-size:12px; color:#8b919c; white-space:nowrap; }
 .rsub ha-icon { --mdc-icon-size:13px; margin-right:1px; }
 .rsub .h { display:inline-flex; align-items:center; color:#7dd3fc; }
@@ -1131,7 +1137,6 @@ ha-icon { --mdc-icon-size:18px; display:inline-flex; }
 .room.occ .rsub .p { color:#5eead4; }
 .room.off .rsub .p { color:#f87171; }
 .rsub .warn { display:inline-flex; align-items:center; color:#fbbf24; }
-.rsub .tg { display:inline-flex; align-items:center; gap:2px; color:var(--rc); font-weight:700; }
 .rsub .na { display:inline-flex; align-items:center; gap:2px; color:#6b7280; }
 .room.tgt { border-color:color-mix(in srgb, var(--rc) 38%, transparent); }
 .room.tgt.live { border-color:color-mix(in srgb, #4ade80 30%, transparent); }
@@ -1163,7 +1168,7 @@ ha-icon { --mdc-icon-size:18px; display:inline-flex; }
 .rdl.near { color:#9aa0aa; }
 .rdl.cold { color:#7dd3fc; }
 .rdl.warm { color:#fb923c; }
-@container rooms (max-width: 330px) { .room { grid-template-columns:36px minmax(0,1fr) auto; } .rspark { display:none; } .rname em { display:none; } }
+@container rooms (max-width: 330px) { .room { grid-template-columns:36px minmax(0,1fr) auto; } .rspark { display:none; } }
 @keyframes radar { 0% { transform:scale(1); opacity:.9; } 100% { transform:scale(1.9); opacity:0; } }
 @keyframes ping-g { 0% { box-shadow:0 0 0 0 rgba(74,222,128,.6); } 100% { box-shadow:0 0 0 7px rgba(74,222,128,0); } }
 @keyframes rise { 0% { transform:translateY(0) scale(1); opacity:0; } 15% { opacity:.95; } 100% { transform:translateY(-118px) scale(.4); opacity:0; } }
