@@ -1,8 +1,9 @@
-/* Linwood Climate Card v1.14.0 — custom dial thermostat for Home Assistant
+/* Linwood Climate Card v1.14.1 — custom dial thermostat for Home Assistant
+ * v1.14.1: shorter Auto Home/Away status lines, so they fit on a phone.
  * v1.14.0: `auto_away:` adds an "Auto Home/Away" row under the tiles with an on/off switch for a presence automation
  *         (Away hold when you leave, schedule when you head home). `auto_away: input_boolean.x` or
  *         `{ entity:, active:, distance: }` — `active` (a boolean the automation turns on while its Away hold runs)
- *         and `distance` (a Proximity distance sensor) only feed the status line ("Holding Away · 4.2 mi from home").
+ *         and `distance` (a Proximity distance sensor) only feed the status line ("Away until you head home · 4.2 mi").
  * v1.13.2: the Comfort menu leaves out the comfort the schedule is running (on the Home schedule it offers only Sleep
  *         and Away holds); "Schedule · Home" / "Resume schedule · Home" already covers it.
  * v1.13.1: the Comfort tile's small label carries the status — SCHEDULE / HOLD — and the value line just the comfort
@@ -299,9 +300,9 @@ class LinwoodClimateCard extends HTMLElement {
   _autoAwayHtml(aa) {
     let sub;
     if (aa.dis) sub = 'Offline';
-    else if (!aa.on) sub = aa.active ? 'Off · clearing the Away hold' : 'Off · the ecobee schedule runs as usual';
-    else if (aa.active) sub = 'Holding Away · back to schedule when you head home';
-    else sub = 'On · Away when you leave, schedule when you head home';
+    else if (!aa.on) sub = aa.active ? 'Off · clearing Away hold' : 'Off · schedule only';
+    else if (aa.active) sub = 'Away until you head home';
+    else sub = 'Away when you leave';
     const dist = aa.on && aa.active && aa.dist != null && aa.dist >= 0.1
       ? `<span class="aad"><ha-icon icon="mdi:map-marker-distance"></ha-icon>${this._fmt(Math.round(aa.dist * 10) / 10)}${aa.unit ? ' ' + lccEsc(aa.unit) : ''}</span>` : '';
     return `<button class="aa${aa.on ? ' on' : ''}${aa.on && aa.active ? ' act' : ''}" data-act="autoaway" role="switch" aria-checked="${aa.on}" aria-label="Auto Home/Away" ${aa.dis ? 'disabled' : ''}>
