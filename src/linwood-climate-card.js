@@ -1,4 +1,9 @@
-/* Linwood Climate Card v1.15.0 — custom dial thermostat for Home Assistant
+/* Linwood Climate Card v1.16.0 — custom dial thermostat for Home Assistant
+ * v1.16.0: `auto_air:` adds an "Auto Fresh Air" row (same style as the others): `{ entity:, active:, co2:, voc:,
+ *         paused:, co2_high: 1000, voc_high: 1500 }` → "Air good · CO₂ 503 ppm", "Fan running · CO₂ 1,240 ppm",
+ *         "Paused while Away". `auto_away: { lead: }` (a pre-heat lead-time sensor, minutes) makes the Away status read
+ *         "Away · pre-heats 25 min out". `heat_alert:` (a boolean that's on while the heat isn't working) shows a red
+ *         "Check furnace" chip in the header.
  * v1.15.0: `auto_mix:` adds an "Auto Air Mixing" row (same style as Auto Home/Away) with an on/off switch for an
  *         automation that runs the blower when rooms drift apart. `{ entity:, active:, spread:, paused:, threshold: }`:
  *         `active` = the automation is running the fan now, `spread` = warmest minus coldest room, `paused` = an entity
@@ -307,7 +312,7 @@ class LinwoodClimateCard extends HTMLElement {
     const r = this._switchRow('auto_away');
     if (!r) return null;
     const ds = this._st(r.cfg.distance);
-    return Object.assign(r, { dist: this._num(r.cfg.distance), unit: ds ? ds.attributes.unit_of_measurement || '' : '' });
+    return Object.assign(r, { dist: this._num(r.cfg.distance), unit: ds ? ds.attributes.unit_of_measurement || '' : '', lead: this._num(r.cfg.lead) });
   }
   /* `auto_mix:` → adds spread (`spread:`, warmest minus coldest room), paused (`paused:` on, e.g. the Away hold) and
    * the threshold the automation starts at (`threshold:`, default 3). */
@@ -328,11 +333,35 @@ class LinwoodClimateCard extends HTMLElement {
     let sub;
     if (aa.dis) sub = 'Offline';
     else if (!aa.on) sub = aa.active ? 'Off · clearing Away hold' : 'Off · schedule only';
-    else if (aa.active) sub = 'Away until you head home';
+    else if (aa.active) sub = aa.lead != null ? `Away · pre-heats ${Math.round(aa.lead)} min out` : 'Away until you head home';
     else sub = 'Away when you leave';
     const dist = aa.on && aa.active && aa.dist != null && aa.dist >= 0.1
       ? `<span class="aad"><ha-icon icon="mdi:map-marker-distance"></ha-icon>${this._fmt(Math.round(aa.dist * 10) / 10)}${aa.unit ? ' ' + lccEsc(aa.unit) : ''}</span>` : '';
     return this._rowHtml('autoaway', 'Auto Home/Away', aa, `<ha-icon icon="${aa.on && aa.active ? 'mdi:home-export-outline' : 'mdi:home-switch-outline'}"></ha-icon>`, sub, dist);
+  }
+  /* `auto_air:` → adds co2 / voc readings (`co2:`, `voc:` sensors), their "high" levels (`co2_high:` 1000,
+   * `voc_high:` 1500) and paused (`paused:` on, e.g. the Away hold). */
+  _autoAir() {
+    const r = this._switchRow('auto_air');
+    if (!r) return null;
+    const c = r.cfg, ps = this._st(c.paused), n = (v, d) => (isFinite(Number(v)) && Number(v) > 0 ? Number(v) : d);
+    return Object.assign(r, { co2: this._num(c.co2), voc: this._num(c.voc), co2Hi: n(c.co2_high, 1000), vocHi: n(c.voc_high, 1500), paused: !!ps && ps.state === 'on' });
+  }
+  _autoAirHtml(ar) {
+    const ppm = ar.co2 != null ? `CO₂ ${Math.round(ar.co2).toLocaleString('en-US')} ppm` : '';
+    const co2High = ar.co2 != null && ar.co2 >= ar.co2Hi, vocHigh = ar.voc != null && ar.voc >= ar.vocHi;
+    let sub;
+    if (ar.dis) sub = 'Offline';
+    else if (!ar.on) sub = ar.active ? 'Off · fan back to Auto' : `Off${ppm ? ' · ' + ppm : ''}`;
+    else if (ar.active) sub = `Fan running · ${co2High || !vocHigh ? ppm || 'air stale' : 'VOCs high'}`;
+    else if (ar.paused) sub = 'Paused while Away';
+    else {
+      const good = (ar.co2 == null || ar.co2 < ar.co2Hi * 0.8) && (ar.voc == null || ar.voc < ar.vocHi * 2 / 3);
+      sub = `${co2High || vocHigh ? 'Air stale' : good ? 'Air good' : 'Air fair'}${ppm ? ' · ' + ppm : ''}`;
+    }
+    const run = ar.on && ar.active;
+    const icon = `<ha-icon icon="${run ? 'mdi:fan' : 'mdi:air-filter'}"${run ? ' class="spin"' : ''}></ha-icon>`;
+    return this._rowHtml('autoair', 'Auto Fresh Air', ar, icon, sub, '');
   }
   _autoMixHtml(am) {
     const gap = am.spread != null ? `${this._fmt(Math.round(am.spread * 10) / 10)}° apart` : '';
@@ -452,7 +481,8 @@ class LinwoodClimateCard extends HTMLElement {
     const ids = [c.weather, c.humidity, c.humidifier, c.comfort, c.room && c.room.temperature, c.room && c.room.humidity];
     this._rooms.forEach((r) => ids.push(r.temperature, r.humidity, r.motion, r.occupancy, r.battery));
     ids.push(c.sleep, c.pin, c.pin_timer);
-    ['auto_away', 'auto_mix'].forEach((k) => { const rc = this._rowCfg(k) || {}; ids.push(rc.entity, rc.active, rc.distance, rc.spread, rc.paused); });
+    ['auto_away', 'auto_mix', 'auto_air'].forEach((k) => { const rc = this._rowCfg(k) || {}; ids.push(rc.entity, rc.active, rc.distance, rc.lead, rc.spread, rc.paused, rc.co2, rc.voc); });
+    ids.push(c.heat_alert);
     const hd = this._st(c.hold);
     parts.push(hd ? String(hd.attributes.preset_mode) : '-');
     const tg = this._st(c.targeting);
@@ -687,12 +717,14 @@ class LinwoodClimateCard extends HTMLElement {
         <div class="rs">${dis ? 'Offline' : on ? 'Running' : 'Off'}</div></div>`);
     }
 
-    const aa = this._autoAway(), am = this._autoMix();
+    const aa = this._autoAway(), am = this._autoMix(), ar = this._autoAir();
+    const hp = this._st(this._config.heat_alert), heatBad = !!hp && hp.state === 'on';
     const fxClass = `fx-${look.fx}`;
     return `
 <div class="card ${fxClass}" style="--c1:${c[0]};--c2:${c[1]};--c3:${c[2]}">
   <div class="head">
     <span class="title">CLIMATE</span>
+    ${heatBad ? `<button class="alert" data-act="info" data-val="${lccEsc(this._config.heat_alert)}" title="Heat has run 30 min without warming the house"><ha-icon icon="mdi:fire-alert"></ha-icon><span>Check furnace</span></button>` : ''}
     <span class="status"><i class="dot${active ? ' pulse' : ''}"></i>${look.label}</span>
     ${this._canResume() && (!cs || cs.hold) ? `<button class="resume" data-act="resume" title="Resume the thermostat schedule (clears any hold)"><ha-icon icon="mdi:calendar-sync"></ha-icon><span>Resume</span></button>` : ''}
     <button class="more" data-act="more" title="Details"><ha-icon icon="mdi:dots-horizontal"></ha-icon></button>
@@ -737,6 +769,7 @@ class LinwoodClimateCard extends HTMLElement {
   </div>
   ${aa ? this._autoAwayHtml(aa) : ''}
   ${am ? this._autoMixHtml(am) : ''}
+  ${ar ? this._autoAirHtml(ar) : ''}
   ${roomsPanel}
   ${reads.length ? `<div class="reads">${reads.join('')}</div>` : ''}
 </div>`;
@@ -1099,6 +1132,11 @@ class LinwoodClimateCard extends HTMLElement {
         if (aa) this._flip(aa, 'Auto Home/Away', aa.on && aa.active ? ' — Away hold cleared' : '');
         break;
       }
+      case 'autoair': {
+        const ar = this._autoAir();
+        if (ar) this._flip(ar, 'Auto Fresh Air', ar.on && ar.active ? ' — fan back to Auto' : '');
+        break;
+      }
       case 'automix': {
         const am = this._autoMix();
         if (am) this._flip(am, 'Auto Air Mixing', am.on && am.active ? ' — fan back to Auto' : '');
@@ -1271,6 +1309,9 @@ ha-icon { --mdc-icon-size:18px; display:inline-flex; }
 .aa .sw { flex:none; display:block; margin:0; }
 .aa + .aa { margin-top:8px; }
 .aai ha-icon.spin { animation:spin 2.4s linear infinite; }
+.alert { display:flex; align-items:center; gap:5px; height:28px; padding:0 10px; border-radius:9px; font-size:12.5px; font-weight:700; color:#fecaca; background:color-mix(in srgb, #ef4444 22%, transparent); border:1px solid color-mix(in srgb, #ef4444 45%, transparent); white-space:nowrap; animation:breathe 2.4s ease-in-out infinite; }
+.alert ha-icon { --mdc-icon-size:15px; color:#f87171; }
+@container lccard (max-width: 360px) { .alert span { display:none; } .alert { padding:0 7px; } }
 @container lccard (max-width: 360px) { .aad { display:none; } }
 /* Rooms panel */
 .roomsbox { margin-top:16px; padding-top:14px; border-top:1px solid rgba(255,255,255,0.07); container-type:inline-size; container-name:rooms; }
