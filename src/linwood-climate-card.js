@@ -1,4 +1,6 @@
-/* Linwood Climate Card v1.13.1 — custom dial thermostat for Home Assistant
+/* Linwood Climate Card v1.13.2 — custom dial thermostat for Home Assistant
+ * v1.13.2: the Comfort menu leaves out the comfort the schedule is running (on the Home schedule it offers only Sleep
+ *         and Away holds); "Schedule · Home" / "Resume schedule · Home" already covers it.
  * v1.13.1: the Comfort tile's small label carries the status — SCHEDULE / HOLD — and the value line just the comfort
  *         (Home, Sleep, Away) or the held temperature, so nothing is cut off on a phone.
  * v1.13.0: the Comfort tile follows the ecobee cloud (`hold:`) instead of the HomeKit select, which reports the comfort
@@ -559,9 +561,9 @@ class LinwoodClimateCard extends HTMLElement {
       else { ic = 'mdi:hand-back-right-outline'; txt = lccEsc(this._cap(cs.hold)); }
       const copts = [`<option value="${LCC_SCHEDULE}"${cs.hold ? '' : ' selected'}>${cs.hold ? 'Resume schedule' : 'Schedule'}${cs.sched ? ` · ${lccEsc(slab)}` : ''}</option>`];
       if (cs.hold && !hl) copts.push(`<option value="__hold__" selected disabled>${cs.hold === 'temp' ? `Hold · ${lccEsc(holdT || '—')}` : lccEsc(this._cap(cs.hold))}</option>`);
-      cs.opts.forEach((o) => {
-        const lab = LCC_COMFORT[o].label, isSched = !cs.hold && o === sk, sel = hk === o;
-        copts.push(`<option value="${o}"${sel ? ' selected' : ''}${isSched ? ' disabled' : ''}>${lab} — ${isSched ? 'running on schedule' : 'hold until next activity'}</option>`);
+      // the comfort the schedule is running isn't offered as a hold — "Schedule · Home" / "Resume schedule" covers it
+      cs.opts.filter((o) => o !== sk).forEach((o) => {
+        copts.push(`<option value="${o}"${hk === o ? ' selected' : ''}>${LCC_COMFORT[o].label} — hold until next activity</option>`);
       });
       fourth = `<label class="stat sel${cs.hold ? ' act' : ''}" title="Comfort setting"><span class="k">${kl}<ha-icon icon="mdi:chevron-down"></ha-icon></span><span class="sv svf"><ha-icon class="svi" icon="${ic}"></ha-icon><span class="svt">${txt}</span></span>
       <select class="msel csel" aria-label="Comfort setting">${copts.join('')}</select></label>`;
