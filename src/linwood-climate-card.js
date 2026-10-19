@@ -1,4 +1,10 @@
-/* Linwood Climate Card v1.12.0 — custom dial thermostat for Home Assistant
+/* Linwood Climate Card v1.13.0 — custom dial thermostat for Home Assistant
+ * v1.13.0: the Comfort tile follows the ecobee cloud (`hold:`) instead of the HomeKit select, which reports the comfort
+ *         in effect without saying whether it is scheduled or held. On the schedule it reads "Home · schedule" (the
+ *         comfort the schedule is running, from climate_mode); a comfort hold reads "Sleep · hold", like the pill in
+ *         the ecobee app. Menu: "Schedule · Home" (or "Resume schedule · Home" while held), then each comfort as
+ *         "hold until next activity" (the one the schedule is already running is greyed out). The header Resume chip
+ *         only shows while a hold is active. Without an ecobee `hold:` the old HomeKit behaviour is unchanged.
  * v1.12.0: picking Home / Sleep / Away in the Comfort dropdown now sets the hold through the ecobee cloud (`hold:`)
  *         with climate.set_preset_mode, which follows the thermostat's own Hold Action preference — so, like choosing
  *         a comfort setting in the ecobee app, the hold lasts until the next scheduled activity instead of the
@@ -248,6 +254,18 @@ class LinwoodClimateCard extends HTMLElement {
   /* Hold a comfort setting until the next scheduled activity. Through the ecobee cloud, set_preset_mode uses the
    * thermostat's Hold Action preference (Until next activity / Ask me → next transition), the same as the ecobee app;
    * the HomeKit select would set an indefinite hold, so it is only the fallback. */
+  /* Schedule vs hold from the ecobee cloud: { sched: "Home", hold: null | "temp" | "sleep" | "away_indefinitely" | ... }.
+   * preset_mode is the held comfort (or "temp") while a hold runs and the scheduled comfort otherwise; climate_mode is
+   * always the comfort the schedule is running. null when there is no ecobee `hold:` entity. */
+  _comfortState() {
+    const eco = this._ecobeeHold(), hs = eco && this._st(eco);
+    if (!hs || hs.state === 'unavailable') return null;
+    const sched = hs.attributes.climate_mode || '', pm = String(hs.attributes.preset_mode || '').toLowerCase();
+    const hold = pm && pm !== 'none' && pm !== sched.toLowerCase() ? pm : null;
+    const pms = (hs.attributes.preset_modes || []).map((p) => String(p).toLowerCase());
+    const opts = Object.keys(LCC_COMFORT).filter((k) => pms.includes(k));
+    return { eco, sched, hold, opts };
+  }
   _setComfort(opt) {
     const lab = (LCC_COMFORT[opt] || {}).label || this._cap(opt);
     const sel = () => this._hass.callService('select', 'select_option', { entity_id: this._config.comfort, option: opt })
@@ -523,8 +541,28 @@ class LinwoodClimateCard extends HTMLElement {
     const presetTxt = this._presetLabel(a.preset_mode);
     const presetAct = a.preset_mode && a.preset_mode !== 'none';
     const cf = this._st(this._config.comfort);
+    const cs = this._comfortState();
     let fourth;
-    if (cf) {
+    if (cs) {
+      // ecobee cloud: the schedule's comfort, or the hold that overrides it (like the pill in the ecobee app)
+      const sk = cs.sched.toLowerCase(), slab = (LCC_COMFORT[sk] || {}).label || cs.sched || 'Schedule';
+      const holdT = off ? '' : dual ? `${this._fmt(t.low)}–${this._fmt(t.high)}°` : `${this._fmt(t.single)}°`;
+      const hk = cs.hold === 'away_indefinitely' ? 'away' : cs.hold;
+      const hl = hk && LCC_COMFORT[hk];
+      let ic, txt;
+      if (!cs.hold) { ic = (LCC_COMFORT[sk] || {}).icon || 'mdi:calendar-clock'; txt = `${lccEsc(slab)} <small>schedule</small>`; }
+      else if (hl) { ic = hl.icon; txt = `${hl.label} <small>${cs.hold === 'away_indefinitely' ? 'hold ∞' : 'hold'}</small>`; }
+      else if (cs.hold === 'temp') { ic = 'mdi:hand-back-right-outline'; txt = `Hold${holdT ? ` <small>${lccEsc(holdT)}</small>` : ''}`; }
+      else { ic = 'mdi:hand-back-right-outline'; txt = lccEsc(this._cap(cs.hold)); }
+      const copts = [`<option value="${LCC_SCHEDULE}"${cs.hold ? '' : ' selected'}>${cs.hold ? 'Resume schedule' : 'Schedule'}${cs.sched ? ` · ${lccEsc(slab)}` : ''}</option>`];
+      if (cs.hold && !hl) copts.push(`<option value="__hold__" selected disabled>${cs.hold === 'temp' ? `Hold · ${lccEsc(holdT || '—')}` : lccEsc(this._cap(cs.hold))}</option>`);
+      cs.opts.forEach((o) => {
+        const lab = LCC_COMFORT[o].label, isSched = !cs.hold && o === sk, sel = hk === o;
+        copts.push(`<option value="${o}"${sel ? ' selected' : ''}${isSched ? ' disabled' : ''}>${lab} — ${isSched ? 'running on schedule' : 'hold until next activity'}</option>`);
+      });
+      fourth = `<label class="stat sel${cs.hold ? ' act' : ''}"><span class="k">COMFORT<ha-icon icon="mdi:chevron-down"></ha-icon></span><span class="sv svf"><ha-icon class="svi" icon="${ic}"></ha-icon><span class="svt">${txt}</span></span>
+      <select class="msel csel" aria-label="Comfort setting">${copts.join('')}</select></label>`;
+    } else if (cf) {
       // a comfort select (ecobee Home / Sleep / Away); "unknown" means the thermostat is simply running its schedule
       const opts4 = (cf.attributes.options || []), known = opts4.includes(cf.state);
       const lk = LCC_COMFORT[cf.state] || {};
@@ -583,7 +621,7 @@ class LinwoodClimateCard extends HTMLElement {
   <div class="head">
     <span class="title">CLIMATE</span>
     <span class="status"><i class="dot${active ? ' pulse' : ''}"></i>${look.label}</span>
-    ${this._canResume() ? `<button class="resume" data-act="resume" title="Resume the thermostat schedule (clears any hold)"><ha-icon icon="mdi:calendar-sync"></ha-icon><span>Resume</span></button>` : ''}
+    ${this._canResume() && (!cs || cs.hold) ? `<button class="resume" data-act="resume" title="Resume the thermostat schedule (clears any hold)"><ha-icon icon="mdi:calendar-sync"></ha-icon><span>Resume</span></button>` : ''}
     <button class="more" data-act="more" title="Details"><ha-icon icon="mdi:dots-horizontal"></ha-icon></button>
   </div>
   <div class="dialwrap">
@@ -835,6 +873,12 @@ class LinwoodClimateCard extends HTMLElement {
         return;
       }
       if (el && el.classList && el.classList.contains('csel')) {
+        const cs = this._comfortState();
+        if (cs) {
+          if (el.value === LCC_SCHEDULE) { if (cs.hold) this._act('resume'); }
+          else if (el.value !== cs.hold && LCC_COMFORT[el.value]) this._setComfort(el.value);
+          return;
+        }
         const cf = this._st(this._config.comfort);
         if (el.value === LCC_SCHEDULE) {
           const hs = this._st(this._config.hold);
