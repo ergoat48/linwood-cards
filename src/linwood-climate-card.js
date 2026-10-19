@@ -1,4 +1,8 @@
-/* Linwood Climate Card v1.10.0 — custom dial thermostat for Home Assistant
+/* Linwood Climate Card v1.11.0 — custom dial thermostat for Home Assistant
+ * v1.11.0: the Rooms header picker is now a "Target room" selector instead of a pin. It reads "Target room · Auto ·
+ *         Office" (what automatic targeting is following right now) or "Target room · Office · 2 h 19 m left" when a
+ *         room is chosen by hand; the menu lists "Auto — follow motion & sleep hours" and each room "for the next 3 h".
+ *         No pin icon or "Pinned" wording anywhere. Config keys are unchanged (`pin:` / `pin_timer:`).
  * v1.10.0: the room the thermostat is following gets a TARGET (or IN AVERAGE) pill next to its name, in the room's
  *         colour, where the THERMOSTAT pill used to sit. The THERMOSTAT pill is gone (`thermostat: true` on a room is
  *         now ignored), and a pinned room shows TARGET instead of a separate "Pinned" label under its name. The pin
@@ -612,27 +616,24 @@ class LinwoodClimateCard extends HTMLElement {
     const tl = off ? null : (dual ? t.low : t.single), th = off ? null : (dual ? t.high : t.single);
 
     const tg = this._targeting();
-    let meta = '';
+    let meta = '', follow = '';
     if (tg) {
       const why = tg.sleep ? ' <span class="tw">· sleep</span>' : '';
       const ic = '<ha-icon icon="mdi:crosshairs-gps"></ha-icon>';
       if (!tg.known) meta = `${ic}<span class="tl">Target</span> unknown`;
       else if (tg.count === 1 && tg.rooms.length === 1) {
         const r = tg.rooms[0];
-        meta = `${ic}<span class="tl">Targeting </span><b style="color:${r.color}">${lccEsc(r.name || 'Room')}</b>${why}`;
+        follow = `<b style="color:${r.color}">${lccEsc(r.name || 'Room')}</b>${why}`;
+        meta = `${ic}<span class="tl">Targeting </span>${follow}`;
       } else {
         const all = tg.rooms.length === this._rooms.length && tg.count === this._rooms.length;
         const two = !all && tg.count === 2 && tg.rooms.length === 2;
         const what = all ? 'all rooms' : two ? tg.rooms.map((r) => `<span style="color:${r.color}">${lccEsc(r.name || 'Room')}</span>`).join(' + ') : tg.count + ' rooms';
-        meta = `${ic}<span class="tl">Averaging </span><b>${what}</b>${why}`;
+        follow = `<b>${what}</b>${why}`;
+        meta = `${ic}<span class="tl">Averaging </span>${follow}`;
       }
     }
     const pin = this._pin();
-    if (pin && pin.room) {
-      const pr = this._rooms.find((r) => (r.name || '').toLowerCase() === pin.room.toLowerCase());
-      const lf = pin.left != null ? ` <span class="tw">· ${lccLeft(pin.left)}</span>` : '';
-      meta = `<ha-icon icon="mdi:pin"></ha-icon><span class="tl">Pinned </span><b${pr ? ` style="color:${pr.color}"` : ''}>${lccEsc(pin.room)}</b>${lf}`;
-    }
     if (tg || pin) { /* meta set above */ } else if (vals.length > 1) {
       const sp = Math.max(...vals) - Math.min(...vals), avg = vals.reduce((s, v) => s + v, 0) / vals.length;
       meta = `${this._fmt(Math.round(sp * 10) / 10)}° spread · avg ${this._fmt(Math.round(avg * 10) / 10)}°`;
@@ -660,7 +661,7 @@ class LinwoodClimateCard extends HTMLElement {
     const rail = vals.length ? this._rail(rows, tl, th, tg) : '';
     const list = rows.map((x, k) => this._roomRow(x, series[k], t0, now, lo, hi, tl, th, tg)).join('');
     return `<div class="roomsbox">
-    <div class="rhead"><span class="rtitle">ROOMS</span>${pin ? this._pinPicker(pin, meta) : meta ? `<span class="rmeta${tg ? ' tgt' : ''}">${meta}</span>` : ''}${wxp}</div>
+    <div class="rhead"><span class="rtitle">ROOMS</span>${pin ? this._pinPicker(pin, follow) : meta ? `<span class="rmeta${tg ? ' tgt' : ''}">${meta}</span>` : ''}${wxp}</div>
     ${rail}
     <div class="rlist">${list}</div>
   </div>`;
@@ -773,11 +774,18 @@ class LinwoodClimateCard extends HTMLElement {
     </svg>${end}`;
   }
 
-  /* the Rooms header as a native picker: Auto (the automation's own rules) or pin one room */
-  _pinPicker(pin, meta) {
-    const o = pin.opts.map((x, i) => `<option value="${lccEsc(x)}"${(pin.room ? x === pin.room : i === 0) ? ' selected' : ''}>${i === 0 ? 'Auto (motion &amp; sleep hours)' : 'Pin ' + lccEsc(x) + ' for 3 h'}</option>`).join('');
-    return `<label class="rpin${pin.room ? ' on' : ''}"><span class="rmeta tgt">${meta || '<ha-icon icon="mdi:crosshairs-gps"></ha-icon>Auto'}</span><ha-icon class="rchev" icon="mdi:chevron-down"></ha-icon>
-      <select class="msel psel" aria-label="Pin the thermostat to a room" ${pin.dis ? 'disabled' : ''}>${o}</select></label>`;
+  /* the Rooms header as a "Target room" selector: Auto (the automation's own rules) or one room for the next 3 h.
+   * `follow` = what automatic targeting is following right now ("" when unknown). */
+  _pinPicker(pin, follow) {
+    const o = pin.opts.map((x, i) => `<option value="${lccEsc(x)}"${(pin.room ? x === pin.room : i === 0) ? ' selected' : ''}>${i === 0 ? 'Auto — follow motion &amp; sleep hours' : lccEsc(x) + ' — for the next 3 h'}</option>`).join('');
+    let val;
+    if (pin.room) {
+      const pr = this._rooms.find((r) => (r.name || '').toLowerCase() === pin.room.toLowerCase());
+      const lf = pin.left != null ? `<span class="tw"> · ${lccLeft(pin.left)}<span class="tl"> left</span></span>` : '';
+      val = `<b${pr ? ` style="color:${pr.color}"` : ''}>${lccEsc(pin.room)}</b>${lf}`;
+    } else val = `<span class="rpa">Auto</span>${follow ? `<span class="rps">·</span>${follow}` : ''}`;
+    return `<label class="rpin${pin.room ? ' on' : ''}"><span class="rpk"><ha-icon icon="mdi:crosshairs-gps"></ha-icon>Target room</span><span class="rmeta tgt">${val}</span><ha-icon class="rchev" icon="mdi:chevron-down"></ha-icon>
+      <select class="msel psel" aria-label="Target room" ${pin.dis ? 'disabled' : ''}>${o}</select></label>`;
   }
 
   _read(icon, color, k, v, s) {
@@ -797,8 +805,8 @@ class LinwoodClimateCard extends HTMLElement {
         const ps = this._st(this._config.pin);
         if (ps && el.value !== ps.state) {
           this._hass.callService('input_select', 'select_option', { entity_id: this._config.pin, option: el.value })
-            .then(() => this._toast(el.value === (ps.attributes.options || [])[0] ? 'Back to automatic targeting' : `Following ${el.value} for 3 hours`))
-            .catch((err) => this._toast(`Pin: ${err.message || err}`));
+            .then(() => this._toast(el.value === (ps.attributes.options || [])[0] ? 'Target room: Auto' : `Target room: ${el.value} for the next 3 hours`))
+            .catch((err) => this._toast(`Target room: ${err.message || err}`));
         }
         return;
       }
@@ -1149,9 +1157,13 @@ ha-icon { --mdc-icon-size:18px; display:inline-flex; }
 .rpin { position:relative; order:3; flex:1 0 100%; min-width:0; display:flex; align-items:center; gap:4px; height:34px; padding:0 8px 0 11px; border-radius:10px; cursor:pointer; background:rgba(255,255,255,0.035); border:1px solid rgba(255,255,255,0.06); box-sizing:border-box; }
 .rpin:hover { background:rgba(255,255,255,0.06); }
 .rpin.on { background:color-mix(in srgb, var(--c2) 10%, rgba(255,255,255,0.03)); border-color:color-mix(in srgb, var(--c2) 35%, transparent); }
-.rpin .rmeta { flex:1 1 auto; font-size:13px; }
-.rpin .rmeta .tl { display:inline !important; }
-.rpin.on .rmeta ha-icon { color:var(--c2); }
+.rpk { flex:none; display:inline-flex; align-items:center; gap:5px; font-size:10px; letter-spacing:.1em; text-transform:uppercase; font-weight:700; color:#8b919c; padding-right:9px; margin-right:5px; border-right:1px solid rgba(255,255,255,0.08); }
+.rpk ha-icon { --mdc-icon-size:14px; }
+.rpin.on .rpk ha-icon { color:var(--c2); }
+.rpin .rmeta { flex:1 1 auto; min-width:0; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.rpin .rmeta .rpa { font-weight:700; color:#e5e7eb; }
+.rpin .rmeta .rps { color:#6b7280; margin:0 5px; }
+@container rooms (max-width: 330px) { .rpin .rmeta .tl { display:none; } }
 .rpin .rchev { --mdc-icon-size:16px; flex:none; color:#6b7280; }
 .rpin:focus-within { outline:1px solid color-mix(in srgb, var(--c2) 55%, transparent); }
 .rdot.tgt { box-shadow:0 0 0 2px #15171c, 0 0 0 4px var(--rc), 0 4px 14px color-mix(in srgb, var(--rc) 50%, transparent); }
