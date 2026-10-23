@@ -74,12 +74,19 @@ jobs:
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # only to create the release (and its tag); nothing else in this job can write
+      contents: write   # only to push the release tag and create the release
     steps:
+      # HACS can't download GitHub release assets (github.com's redirect sends a header too large for HA's HTTP client),
+      # so the bundle goes into the tagged commit instead: the tag points at a one-off commit = the source commit plus
+      # dist/linwood-cards.js. HACS reads dist/ at the tag from raw.githubusercontent.com. No branch ever gets the build.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.sha }}
       - uses: actions/download-artifact@v4
         with:
           name: bundle
-      - name: Publish the release HACS installs
+          path: dist
+      - name: Tag the build and publish the release HACS installs
         env:
           GH_TOKEN: ${{ github.token }}
           V: ${{ needs.check.outputs.version }}
@@ -87,10 +94,15 @@ jobs:
           ROLLBACK: ${{ inputs.sha }}
         run: |
           set -euo pipefail
-          MSG=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}" --jq '.commit.message | split("\n")[0]')
-          NOTES="${MSG}"$'\n\n'"Commit ${SHA:0:7}."
+          MSG=$(git log -1 --format=%s "$SHA")
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f dist/linwood-cards.js
+          git commit -q -m "Build $V from ${SHA:0:7}"
+          git tag "$V" && git push -q origin "refs/tags/$V"
+          NOTES="${MSG}"$'\n\n'"Built from ${SHA:0:7}."
           [ -n "$ROLLBACK" ] && NOTES="Manual deploy / rollback to ${SHA:0:7}: ${MSG}"
-          gh release create "$V" linwood-cards.js -R "$GITHUB_REPOSITORY" --target "$SHA" --title "$V — ${MSG}" --notes "$NOTES" --latest
+          gh release create "$V" -R "$GITHUB_REPOSITORY" --verify-tag --title "$V — ${MSG}" --notes "$NOTES" --latest
           echo "Released $V (${SHA:0:7})" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Tell Home Assistant to install it
         env:

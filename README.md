@@ -13,8 +13,8 @@ edit src/ → push to main → CI: syntax + secret scan + gitleaks + build + smo
 
 1. Edit a file in `src/` and bump the version line in its header comment.
 2. Optional locally: `npm ci`, then `npm test` (check → build → smoke test of the bundle).
-3. Push to `main` (or merge a PR). If every check passes, CI publishes `dist/linwood-cards.js` as release `v2.<run>.0`
-   and calls Home Assistant's deploy webhook. If anything fails, no release is made and nothing changes at home.
+3. Push to `main` (or merge a PR). If every check passes, CI tags a build commit (your commit + `dist/linwood-cards.js`)
+   as `v2.<run>.0`, publishes it as a release and calls Home Assistant's deploy webhook. If anything fails, no release is made and nothing changes at home.
 4. Home Assistant installs it within a few seconds. Refresh the dashboard (on the phone, pull to refresh) to see it.
 
 **Roll back:** GitHub → Actions → *check and deploy* → *Run workflow*, paste an older commit SHA (short is fine). That
@@ -24,13 +24,15 @@ commit is rebuilt and shipped as a new, higher version. (Or in HACS: Linwood Car
 
 ### How it works
 
-- HACS has `ergoat48/linwood-cards` as a custom *Dashboard* repository (`hacs.json`). It downloads the release asset
-  `linwood-cards.js` to `/config/www/community/linwood-cards/` and registers it as the only Linwood resource, with a
+- HACS has `ergoat48/linwood-cards` as a custom *Dashboard* repository (`hacs.json`). It downloads
+  `dist/linwood-cards.js` at the release tag to `/config/www/community/linwood-cards/` and registers it as the only Linwood resource, with a
   `?hacstag=` that changes on every install so browsers fetch the new version instead of a cached one.
 - The HA automation **Linwood cards: deploy from GitHub** has a webhook trigger. CI posts `{"version": "v2.N.0"}`; the
   automation checks the format and runs `update.install` on HACS's Linwood Cards update entity with that version.
 - The webhook URL lives only in the `HA_DEPLOY_WEBHOOK` Actions secret. Knowing it lets someone ask HA to install a
   version of *this* repo's releases — nothing else. No HA token is stored in GitHub.
+- The built file is never on `main` (`dist/` is git-ignored). Each release tag points at its own one-off commit that adds
+  it. (Not a release *asset*: github.com's asset redirect sends a header too large for Home Assistant's HTTP client.)
 - `tools/build.mjs` minifies each card on its own and wraps it in its own scope, so an error in one card is logged and
   the others still load (the same isolation the old per-file loader had).
 - Adding a card: put the file in `src/` and add one line to `src/index.js`. No change in Home Assistant.
