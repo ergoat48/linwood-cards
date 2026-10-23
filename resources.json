@@ -1,22 +1,10 @@
 {
-  "_comment": "What Home Assistant has installed (Settings > Dashboards > Resources). Only the loader lives in HA; the cards it loads are listed in src/index.js.",
+  "_comment": "How Home Assistant gets the cards. Since v2 there is no inline Linwood resource: HACS installs the release asset and owns the resource entry.",
   "repo": "ergoat48/linwood-cards",
-  "ha_resources": [
-    { "file": "loader/linwood-loader.js", "ha_id": "49a6736c62f344efa7de1074fadd8040", "version": "1.1.0", "type": "module", "storage": "inline",
-      "note": "Rarely changes. If you edit it, update this HA resource with the new file content." }
-  ],
-  "removed_from_ha_2026_10_13": {
-    "_comment": "Inline resources replaced by the loader. Their code is in src/ (and retired/) byte-for-byte as it was in HA, except the plant card, which HA ran as a minified build of src/linwood-plant-card.js.",
-    "src/linwood-kit.js": "67d208aac7a14de4a837f27e229fcc16",
-    "src/linwood-appletv-card.js": "2c94e9e7142b4bd4bbd3ec5fd0aa0fdc",
-    "src/linwood-theater-card.js": "f557029813714db3b5fdb72b9f929878",
-    "src/linwood-tv-card.js": "3d0f07143ff148648460733bcd195dfb",
-    "src/linwood-climate-card.js": "c0bdeab4d876436ea2cd9d2e5dba182a",
-    "src/linwood-calendar-card.js": "5608c513cf794db49d95ecf632681ab7",
-    "src/linwood-plant-card.js": "8cc1a476f7d64a29a51f71b09bd02c95",
-    "src/linwood-jump-bar.js": "b27d6df5007d42dea7a237aa9a01b2c6",
-    "src/linwood-shell.js": "14260940b68244379568ca9ef4bbabde",
-    "retired/linwood-plant-art.js": "6c7bdca44576460c8738dbe8bf834b67",
-    "retired/linwood-plant-safe-area.js": "d0b20dd4f6af48e7b181f643151af7db"
+  "hacs": { "category": "Dashboard (lovelace)", "file": "linwood-cards.js", "served_from": "/hacsfiles/linwood-cards/linwood-cards.js" },
+  "deploy_automation": "Linwood cards: deploy from GitHub (webhook trigger; id kept in HA and in the HA_DEPLOY_WEBHOOK Actions secret, never here)",
+  "history": {
+    "2026-10-13": "11 inline resources replaced by an inline loader that fetched cards from GitHub via jsDelivr.",
+    "2026-10-23": "Loader replaced by a CI-built bundle installed by HACS and served locally."
   }
 }

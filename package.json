@@ -4,9 +4,13 @@
   "type": "module",
   "description": "Custom Lovelace cards for the Linwood Home Assistant dashboards",
   "scripts": {
-    "check": "bash tools/check.sh"
+    "check": "bash tools/check.sh",
+    "build": "node tools/build.mjs",
+    "smoke": "node tools/smoke.mjs",
+    "test": "npm run check && npm run build && npm run smoke"
   },
   "devDependencies": {
-    "@happy-dom/global-registrator": "^15.11.7"
+    "@happy-dom/global-registrator": "^15.11.7",
+    "esbuild": "^0.25.10"
   }
 }

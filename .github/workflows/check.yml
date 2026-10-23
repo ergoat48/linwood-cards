@@ -1,8 +1,9 @@
 name: check and deploy
-# Every push and PR: syntax + secret scan, gitleaks over history, and a smoke test that loads every card.
-# Push to main that passes: the commit is written to DEPLOYED on the `deployed` branch. Home Assistant's Linwood Loader
-# reads that file, so dashboards pick the change up on their next load (within ~2 minutes).
-# Roll back: Actions › "check and deploy" › Run workflow, give a commit SHA (blank = current main).
+# Every push and PR: syntax + secret scan, gitleaks over history, build the bundle, smoke-test the bundle.
+# Push to main that passes: the bundle is published as a GitHub Release (v2.<run>.0) and Home Assistant is told to
+# install it through HACS (webhook in the HA_DEPLOY_WEBHOOK secret). Dashboards load it from the Pi on their next refresh.
+# Roll back: Actions › "check and deploy" › Run workflow, give an older commit SHA. That commit is rebuilt and shipped as
+# a new, higher version, so HACS always moves forward.
 on:
   push:
     branches: ['**', '!deployed']
@@ -20,9 +21,15 @@ concurrency:
   group: deploy-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  DEPLOYING: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' }}
+
 jobs:
   check:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      sha: ${{ steps.v.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -32,6 +39,12 @@ jobs:
         env:
           SHA: ${{ inputs.sha }}
         run: git checkout --detach "$SHA"   # short or full SHA
+      - name: Version
+        id: v
+        run: |
+          SHA=$(git rev-parse HEAD)
+          if [ "$DEPLOYING" = "true" ]; then V="v2.${{ github.run_number }}.0"; else V="dev-${SHA:0:7}"; fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"; echo "sha=$SHA" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -41,39 +54,58 @@ jobs:
         run: |
           curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz | tar xz gitleaks
           ./gitleaks detect --source . --redact --verbose
-      - name: Smoke test (load every card)
+      - name: Build the bundle
+        env:
+          LINWOOD_VERSION: ${{ steps.v.outputs.version }}
+          GITHUB_SHA: ${{ steps.v.outputs.sha }}
         run: |
-          if [ ! -f tools/smoke.mjs ]; then echo "No smoke test in this commit (pre-pipeline) — skipped"; exit 0; fi
           npm ci --no-audit --no-fund
-          node tools/smoke.mjs
+          node tools/build.mjs | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Smoke test (load the bundle, every card must register)
+        run: node tools/smoke.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle
+          path: dist/linwood-cards.js
+          retention-days: 7
 
   deploy:
     needs: check
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # only to move the `deployed` branch; nothing else in this job can write
+      contents: write   # only to create the release (and its tag); nothing else in this job can write
     steps:
-      # The `deployed` branch is a deploy log: each deploy (or rollback) adds a commit that writes the target SHA into
-      # DEPLOYED. It only ever moves forward, so CI never needs permission to rewind a branch.
-      - name: Record the deploy
+      - uses: actions/download-artifact@v4
+        with:
+          name: bundle
+      - name: Publish the release HACS installs
         env:
           GH_TOKEN: ${{ github.token }}
-          SHA: ${{ inputs.sha || github.sha }}
+          V: ${{ needs.check.outputs.version }}
+          SHA: ${{ needs.check.outputs.sha }}
+          ROLLBACK: ${{ inputs.sha }}
         run: |
           set -euo pipefail
-          exec 3>&1
-          api() { local out; out=$(gh api "$@" 2>&1) || { echo "::error title=deploy failed::${out//$'\n'/ }" >&3; exit 1; }; printf '%s' "$out"; }
-          R="repos/${GITHUB_REPOSITORY}"
-          SHA=$(api "$R/commits/${SHA}" --jq .sha)
-          if ! gh api "$R/git/ref/heads/deployed" >/dev/null 2>&1; then
-            api -X POST "$R/git/refs" -f ref=refs/heads/deployed -f sha="${GITHUB_SHA}" >/dev/null
+          MSG=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}" --jq '.commit.message | split("\n")[0]')
+          NOTES="${MSG}"$'\n\n'"Commit ${SHA:0:7}."
+          [ -n "$ROLLBACK" ] && NOTES="Manual deploy / rollback to ${SHA:0:7}: ${MSG}"
+          gh release create "$V" linwood-cards.js -R "$GITHUB_REPOSITORY" --target "$SHA" --title "$V — ${MSG}" --notes "$NOTES" --latest
+          echo "Released $V (${SHA:0:7})" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Tell Home Assistant to install it
+        env:
+          V: ${{ needs.check.outputs.version }}
+          HOOK: ${{ secrets.HA_DEPLOY_WEBHOOK }}
+        run: |
+          set -euo pipefail
+          if [ -z "$HOOK" ]; then
+            echo "::warning title=not installed::HA_DEPLOY_WEBHOOK secret is not set — install $V from HACS by hand."; exit 0
           fi
-          CUR=$(gh api "$R/contents/DEPLOYED?ref=deployed" 2>/dev/null || true)
-          CUR_SHA=$(printf '%s' "$CUR" | jq -r '.sha // empty' 2>/dev/null || true)
-          CUR_VAL=$(printf '%s' "$CUR" | jq -r '.content // empty' 2>/dev/null | base64 -d 2>/dev/null | tr -d '[:space:]' || true)
-          if [ "$CUR_VAL" = "$SHA" ]; then echo "${SHA:0:7} is already deployed" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; fi
-          args=(-X PUT "$R/contents/DEPLOYED" -f branch=deployed -f message="Deploy ${SHA:0:7}${CUR_VAL:+ (was ${CUR_VAL:0:7})}" -f content="$(printf '%s\n' "$SHA" | base64 -w0)")
-          [ -n "$CUR_SHA" ] && args+=(-f sha="$CUR_SHA")
-          api "${args[@]}" >/dev/null
-          echo "Deployed ${SHA:0:7} — dashboards load it on their next refresh." | tee -a "$GITHUB_STEP_SUMMARY"
+          # The URL is a secret (it's what lets this job reach the house) — never echo it.
+          for i in 1 2 3; do
+            if curl -fsS -o /dev/null -m 20 -X POST -H 'Content-Type: application/json' -d "{\"version\":\"$V\"}" "$HOOK"; then
+              echo "Home Assistant is installing $V — dashboards pick it up on their next refresh." | tee -a "$GITHUB_STEP_SUMMARY"; exit 0
+            fi
+            sleep 10
+          done
+          echo "::error title=Home Assistant unreachable::Release $V is published, but HA didn't answer. HACS will offer it as an update."; exit 1

@@ -9,7 +9,11 @@ const expected = [
   'linwood-tv-card', 'linwood-climate-card', 'linwood-security-card', 'linwood-weather-card', 'linwood-calendar-card', 'linwood-plant-card', 'linwood-grow-lights-card',
 ];
 
-const results = await (await import('../src/index.js')).default;
+// Test exactly what ships: the bundle from tools/build.mjs (run `npm run build` first).
+const errors = [];
+const origError = console.error;
+console.error = (...a) => { errors.push(a.map(String).join(' ')); origError(...a); };
+await import('../dist/linwood-cards.js');
 // Theater and TV define themselves after the Kit; give pending promises a moment.
 await Promise.race([
   Promise.all(expected.map((t) => customElements.whenDefined(t))),
@@ -17,9 +21,13 @@ await Promise.race([
 ]);
 
 let fail = 0;
-for (const r of results) {
-  console.log(`${r.ok ? 'ok  ' : 'FAIL'} ${r.file}${r.error ? ` — ${r.error}` : ''}`);
-  if (!r.ok) fail++;
+const { files } = await import('../src/index.js');
+const state = window.LinwoodCards;
+if (!state) { console.log('FAIL bundle did not set window.LinwoodCards'); fail++; }
+for (const f of files) {
+  const ok = state?.files.includes(f);
+  console.log(`${ok ? 'ok  ' : 'FAIL'} ${f}${ok ? '' : ` — ${errors.find((e) => e.includes(f)) || 'did not run'}`}`);
+  if (!ok) fail++;
 }
 for (const t of expected) {
   if (!customElements.get(t)) { console.log(`FAIL <${t}> was not defined`); fail++; }

@@ -1,42 +1,40 @@
 # Linwood cards
 
-Custom Lovelace cards for the Linwood Home Assistant dashboards. This repo is the source of truth for the card code;
-Home Assistant loads it straight from here.
+Custom Lovelace cards for the Linwood Home Assistant dashboards. This repo is the source of truth for the card code.
+CI bundles every card into one file and ships it as a GitHub Release; HACS installs that release on the Home Assistant
+server, which serves it locally — dashboards don't touch the internet to load the cards.
 
 ## How a change reaches the dashboards
 
 ```
-edit src/ → push to main → CI: syntax + secret scan + gitleaks + smoke test → commit recorded in DEPLOYED → next dashboard load
+edit src/ → push to main → CI: syntax + secret scan + gitleaks + build + smoke test → GitHub Release v2.N.0
+          → webhook → Home Assistant tells HACS to install v2.N.0 → next dashboard load
 ```
 
 1. Edit a file in `src/` and bump the version line in its header comment.
-2. Optional locally: `npm run check` and `node tools/smoke.mjs` (after `npm ci`).
-3. Push to `main` (or merge a PR). CI runs the checks; if they all pass, it records that commit in the `DEPLOYED` file
-   on the `deployed` branch. If anything fails, nothing is recorded and nothing changes at home.
-4. Dashboards pick it up on their next load — within about 2 minutes. On the phone, pull to refresh or reopen the app.
+2. Optional locally: `npm ci`, then `npm test` (check → build → smoke test of the bundle).
+3. Push to `main` (or merge a PR). If every check passes, CI publishes `dist/linwood-cards.js` as release `v2.<run>.0`
+   and calls Home Assistant's deploy webhook. If anything fails, no release is made and nothing changes at home.
+4. Home Assistant installs it within a few seconds. Refresh the dashboard (on the phone, pull to refresh) to see it.
 
-**Roll back:** GitHub → Actions → *check and deploy* → *Run workflow*, paste an older commit SHA (short is fine).
-Leave it blank to redeploy current `main`.
-**Deploy history:** the commit log of the `deployed` branch — one "Deploy abc1234 (was def5678)" commit per deploy.
-**Try a branch on one device** before merging — in that browser's console:
-`localStorage.setItem('linwood-cards-ref', 'my-branch')` (or a full SHA), then reload. `localStorage.removeItem('linwood-cards-ref')` to go back.
-**What's loaded on this device:** `window.LinwoodCards` in the console (also logged on load).
+**Roll back:** GitHub → Actions → *check and deploy* → *Run workflow*, paste an older commit SHA (short is fine). That
+commit is rebuilt and shipped as a new, higher version. (Or in HACS: Linwood Cards → ⋮ → Redownload → pick a version.)
+**Deploy history:** the repo's Releases page — one release per deploy, titled with the commit message.
+**What's loaded on this device:** `window.LinwoodCards` in the browser console (also logged on load).
 
 ### How it works
 
-Home Assistant has a single Linwood resource: the loader (`loader/linwood-loader.js`, stored inline in HA). On each
-dashboard load it reads `DEPLOYED` from the `deployed` branch (at most every 2 minutes per device), then imports
-`src/index.js` from jsDelivr at that exact commit; `index.js` loads every card. Because files are fetched by commit
-SHA, every device runs one consistent set, and jsDelivr / browsers can cache them permanently.
-
-- No Home Assistant token or URL is stored in GitHub, and Home Assistant doesn't need to be reachable from the internet.
-  The only write access CI uses is GitHub's own per-run token, used to add one commit to the `deployed` branch. That
-  branch only ever moves forward, so CI never needs permission to rewrite history or touch workflows.
-- If GitHub can't be reached, the loader reuses the last commit that device loaded (then the commit from when the loader
-  was installed). If a commit fails to load, it falls back to the last good one.
-- Cards need internet for a device's first load of a new commit; after that they're cached.
+- HACS has `ergoat48/linwood-cards` as a custom *Dashboard* repository (`hacs.json`). It downloads the release asset
+  `linwood-cards.js` to `/config/www/community/linwood-cards/` and registers it as the only Linwood resource, with a
+  `?hacstag=` that changes on every install so browsers fetch the new version instead of a cached one.
+- The HA automation **Linwood cards: deploy from GitHub** has a webhook trigger. CI posts `{"version": "v2.N.0"}`; the
+  automation checks the format and runs `update.install` on HACS's Linwood Cards update entity with that version.
+- The webhook URL lives only in the `HA_DEPLOY_WEBHOOK` Actions secret. Knowing it lets someone ask HA to install a
+  version of *this* repo's releases — nothing else. No HA token is stored in GitHub.
+- `tools/build.mjs` minifies each card on its own and wraps it in its own scope, so an error in one card is logged and
+  the others still load (the same isolation the old per-file loader had).
 - Adding a card: put the file in `src/` and add one line to `src/index.js`. No change in Home Assistant.
-- The loader itself rarely changes. If it does, update the inline resource in HA (`resources.json` has its id).
+- If the webhook can't reach HA (internet down), the release still exists; HACS shows it as an update to install.
 
 ## What's here
 
@@ -53,10 +51,10 @@ SHA, every device runs one consistent set, and jsDelivr / browsers can cache the
 | `src/linwood-plant-card.js` | 3.8.0 | plant care tracker + grow lights card |
 | `src/linwood-jump-bar.js` | 1.0.1 | jump-to chips on the Plant Care view |
 | `src/linwood-shell.js` | 1.4.0 | sidebar room navigation / styling |
-| `src/index.js` | — | list of cards the loader brings in |
-| `loader/linwood-loader.js` | 1.0.0 | the one resource installed in Home Assistant |
+| `src/index.js` | — | list of cards that go into the bundle, in order |
+| `hacs.json` | — | HACS manifest (Dashboard repo, file `linwood-cards.js`) |
 | `scripts/denon_signal.py` | — | feeds `sensor.theater_av_signal` (command_line sensor) for the Theater format badges |
-| `tools/` | — | `check.sh` (syntax + secret scan), `smoke.mjs` (loads every card in a simulated browser) |
+| `tools/` | — | `check.sh` (syntax + secret scan), `build.mjs` (bundle → `dist/`), `smoke.mjs` (loads the bundle in a simulated browser) |
 | `retired/` | — | Plant Art and Safe Area add-ons, now built into Plant Card 3.6.0 |
 
 ## Not in this repo (on purpose)
