@@ -37,6 +37,9 @@ commit is rebuilt and shipped as a new, higher version. (Or in HACS: Linwood Car
   the others still load (the same isolation the old per-file loader had).
 - Adding a card: put the file in `src/` and add one line to `src/index.js`. No change in Home Assistant.
 - If the webhook can't reach HA (internet down), the release still exists; HACS shows it as an update to install.
+- To replace the webhook URL: in HA run the WebSocket command `cloud/cloudhook/create` for the automation's webhook id
+  (or Settings › Home Assistant Cloud › Webhooks), then paste the URL into GitHub › Settings › Secrets and variables ›
+  Actions › `HA_DEPLOY_WEBHOOK`.
 
 ## What's here
 
