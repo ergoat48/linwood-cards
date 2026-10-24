@@ -10,7 +10,7 @@
     "test": "npm run check && npm run build && npm run smoke"
   },
   "devDependencies": {
-    "@happy-dom/global-registrator": "^15.11.7",
-    "esbuild": "^0.25.10"
+    "@happy-dom/global-registrator": "^21.0.4",
+    "esbuild": "^0.28.2"
   }
 }
