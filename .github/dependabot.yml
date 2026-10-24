@@ -1,0 +1,17 @@
+# Keeps the SHA-pinned actions and the npm build tools current. Dependabot opens a PR; nothing merges itself.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      build-tools:
+        patterns: ["*"]
