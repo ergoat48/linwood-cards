@@ -31,9 +31,10 @@ jobs:
       version: ${{ steps.v.outputs.version }}
       sha: ${{ steps.v.outputs.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           fetch-depth: 0
+          persist-credentials: false   # this job never pushes; keep the token off disk while npm runs
       - name: Switch to the requested commit (manual deploy / rollback)
         if: inputs.sha != ''
         env:
@@ -45,14 +46,16 @@ jobs:
           SHA=$(git rev-parse HEAD)
           if [ "$DEPLOYING" = "true" ]; then V="v2.${{ github.run_number }}.0"; else V="dev-${SHA:0:7}"; fi
           echo "version=$V" >> "$GITHUB_OUTPUT"; echo "sha=$SHA" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
           node-version: 20
       - name: Syntax + secret patterns
         run: bash tools/check.sh
       - name: Gitleaks (full history)
         run: |
-          curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz | tar xz gitleaks
+          curl -sSLf -o gitleaks.tgz https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz
+          echo "ba6dbb656933921c775ee5a2d1c13a91046e7952e9d919f9bac4cec61d628e7d  gitleaks.tgz" | sha256sum -c -
+          tar xzf gitleaks.tgz gitleaks
           ./gitleaks detect --source . --redact --verbose
       - name: Build the bundle
         env:
@@ -63,7 +66,7 @@ jobs:
           node tools/build.mjs | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Smoke test (load the bundle, every card must register)
         run: node tools/smoke.mjs
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: bundle
           path: dist/linwood-cards.js
@@ -73,16 +76,19 @@ jobs:
     needs: check
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    # The HA_DEPLOY_WEBHOOK secret lives in this environment, which only main can deploy to,
+    # so a workflow edited on any other branch can't read it.
+    environment: production
     permissions:
       contents: write   # only to push the release tag and create the release
     steps:
       # HACS can't download GitHub release assets (github.com's redirect sends a header too large for HA's HTTP client),
       # so the bundle goes into the tagged commit instead: the tag points at a one-off commit = the source commit plus
       # dist/linwood-cards.js. HACS reads dist/ at the tag from raw.githubusercontent.com. No branch ever gets the build.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           ref: ${{ needs.check.outputs.sha }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           name: bundle
           path: dist
