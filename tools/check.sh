@@ -18,7 +18,7 @@ if grep -rnIE "$pattern" --exclude-dir=.git --exclude-dir=node_modules --exclude
   echo "  ^ possible secret"; fail=1
 fi
 # Things that are not secrets but should never be published: home-network addresses and HA remote URLs.
-if grep -rnIE '\b(10|127|192\.168|172\.(1[6-9]|2[0-9]|3[01]))(\.[0-9]{1,3}){2,3}\b|ui\.nabu\.casa|duckdns\.org|webhook_id' \
+if grep -rnIE '\b192\.168(\.[0-9]{1,3}){1,2}\b|\b172\.(1[6-9]|2[0-9]|3[01])(\.[0-9]{1,3}){2}\b|\b(10|127)(\.[0-9]{1,3}){3}\b|ui\.nabu\.casa|duckdns\.org|webhook_id' \
      --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=dist --exclude=check.sh . ; then
   echo "  ^ LAN address / remote URL / webhook id — keep these in Home Assistant, not here"; fail=1
 fi
