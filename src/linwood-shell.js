@@ -1,4 +1,4 @@
-/* Linwood Shell v1.4.1 — replaces the sidebar's panel list with Linwood room navigation, restyles the sidebar to match the
+/* Linwood Shell v1.4.2 — replaces the sidebar's panel list with Linwood room navigation, restyles the sidebar to match the
  * Linwood dashboard, and hides the stock dashboard toolbar (title / back arrow / edit menu) on the Linwood dashboard.
  *  - Sidebar: our <linwood-nav> is slotted into ha-sidebar's "main-navigation" slot (a supported slot in the frontend), so the
  *    native list (Overview, Map, History, HACS …) is replaced while Settings / Notifications / Profile stay untouched below.
@@ -21,11 +21,13 @@
  *  - v1.4.1: the grow-light count on Plant Care and Living Room goes by each light's real state (Plant Card's
  *    LinwoodLightState). The mantel bars' plugs are always on so the bars can hear RF, so counting plugs reported
  *    "2 lights on" all night with every light dark.
+ *  - v1.4.2: Home no longer stays highlighted on every page. Its /home-v2 match was a prefix match, and every view
+ *    lives under /home-v2/, so it matched everywhere. A bare dashboard root now matches only itself.
  * Everything is configured in NAV below.
  */
 (() => {
   if (window.__linwoodShell) return;
-  window.__linwoodShell = '1.4.1';
+  window.__linwoodShell = '1.4.2';
 
   const DASHES = ['home-v2', 'living-room'];   // dashboards that get the Linwood treatment (no stock header, Edit link in the nav)
   const BRAND = 'Linwood';
@@ -81,7 +83,12 @@
     history.pushState(null, '', path);
     window.dispatchEvent(new CustomEvent('location-changed', { detail: { replace: false } }));
   };
-  const matches = (it, p) => (it.match || [it.path]).some((m) => p === m || p.startsWith(`${m}/`)) || p === it.path;
+  /* A bare dashboard root (/home-v2) matches only itself — every view lives under it, so a prefix match would keep Home
+   * highlighted on every page. View paths (/home-v2/home) also match their sub-paths. */
+  const matches = (it, p) => {
+    const q = p.replace(/\/+$/, '') || '/';
+    return (it.match || [it.path]).some((m) => q === m || (m.split('/').length > 2 && q.startsWith(`${m}/`))) || q === it.path;
+  };
 
   /* ---------- sidebar navigation ---------- */
   class LinwoodNav extends HTMLElement {
