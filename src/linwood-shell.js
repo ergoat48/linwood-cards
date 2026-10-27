@@ -1,4 +1,4 @@
-/* Linwood Shell v1.4.0 — replaces the sidebar's panel list with Linwood room navigation, restyles the sidebar to match the
+/* Linwood Shell v1.4.1 — replaces the sidebar's panel list with Linwood room navigation, restyles the sidebar to match the
  * Linwood dashboard, and hides the stock dashboard toolbar (title / back arrow / edit menu) on the Linwood dashboard.
  *  - Sidebar: our <linwood-nav> is slotted into ha-sidebar's "main-navigation" slot (a supported slot in the frontend), so the
  *    native list (Overview, Map, History, HACS …) is replaced while Settings / Notifications / Profile stay untouched below.
@@ -18,18 +18,36 @@
  *    trust). A frosted strip the height of the status bar also stays pinned at the top, so content scrolled up passes
  *    under it instead of colliding with the time and battery. Desktop and edit mode are unchanged (the inset is 0 / the
  *    stock header is back).
+ *  - v1.4.1: the grow-light count on Plant Care and Living Room goes by each light's real state (Plant Card's
+ *    LinwoodLightState). The mantel bars' plugs are always on so the bars can hear RF, so counting plugs reported
+ *    "2 lights on" all night with every light dark.
  * Everything is configured in NAV below.
  */
 (() => {
   if (window.__linwoodShell) return;
-  window.__linwoodShell = '1.4.0';
+  window.__linwoodShell = '1.4.1';
 
   const DASHES = ['home-v2', 'living-room'];   // dashboards that get the Linwood treatment (no stock header, Edit link in the nav)
   const BRAND = 'Linwood';
-  const GROW = ['switch.side_grow_light', 'switch.living_room_mantle_left_grow_light', 'switch.mantle_right_grow_light'];
+  /* The living-room grow lights, described the way the Plant Card's grow-lights card describes them. The mantel bars are
+   * RF-switched: their plugs stay on 24/7 so the bars can hear the remote, so a bar is "on" only while it draws power. */
+  const GROW = [
+    { entity: 'switch.side_grow_light' },
+    { entity: 'switch.living_room_mantle_left_grow_light', power: 'sensor.living_room_mantle_left_grow_light_power', control: 'rf', full_watts: 34.2 },
+    { entity: 'switch.mantle_right_grow_light', power: 'sensor.mantle_right_grow_light_power', control: 'rf', full_watts: 34.2 },
+  ];
   const on = (h, id) => !!h && !!h.states[id] && h.states[id].state === 'on';
   const st = (h, id) => (h && h.states[id] ? h.states[id].state : undefined);
   const countOn = (h, ids) => ids.filter((id) => on(h, id)).length;
+  /* Plant Card 3.7+ exposes LinwoodLightState (same rules as its own cards); without it, an RF bar needs > 2 W to count */
+  const growLit = (h, l) => {
+    if (window.LinwoodLightState) return !!(window.LinwoodLightState(h, l) || {}).on;
+    if (!on(h, l.entity)) return false;
+    if (l.control !== 'rf' || !l.power) return true;
+    const w = parseFloat(st(h, l.power));
+    return !isFinite(w) || w > 2;
+  };
+  const growOn = (h) => (h ? GROW.filter((l) => growLit(h, l)).length : 0);
   const lights = (n) => (n ? `${n} light${n > 1 ? 's' : ''}` : '');
   /* meta(hass) → { text, hot, alert } — `hot` lights the amber dot, `alert` turns it red */
   const NAV = [
@@ -37,7 +55,7 @@
       { name: 'Home', icon: 'mdi:home-variant', path: '/home-v2/home', match: ['/home-v2', '/home-v2/home'],
         meta: (h) => { const w = h && h.states['weather.forecast_home']; return { text: w && w.attributes.temperature != null ? `${Math.round(w.attributes.temperature)}°` : '' }; } },
       { name: 'Plant Care', icon: 'mdi:sprout', path: '/home-v2/plants',
-        meta: (h) => { const s = window.LinwoodPlantSummary ? window.LinwoodPlantSummary(h) : null; const g = countOn(h, GROW);
+        meta: (h) => { const s = window.LinwoodPlantSummary ? window.LinwoodPlantSummary(h) : null; const g = growOn(h);
           if (s && s.due) return { text: `${s.due} due`, hot: true, alert: s.overdue };
           return { text: g ? `${g} light${g > 1 ? 's' : ''} on` : '', hot: g > 0 }; } },
     ] },
@@ -45,7 +63,7 @@
       { name: 'Bedroom', icon: 'mdi:bed-king-outline', path: '/home-v2/bedroom',
         meta: (h) => { const n = countOn(h, ['light.bedroom_main_lights', 'light.bedroom_lamp_1', 'light.bedroom_lamp_2']); const tv = !['off', 'standby', 'unavailable', undefined].includes(st(h, 'media_player.lg_g4_oled')); return { text: [tv ? 'TV' : '', lights(n)].filter(Boolean).join(' · '), hot: n > 0 || tv }; } },
       { name: 'Living Room', icon: 'mdi:sofa-outline', path: '/home-v2/living-room',
-        meta: (h) => { const tv = ['on', 'playing', 'paused', 'idle'].includes(st(h, 'media_player.television_2')); const g = countOn(h, GROW) > 0; return { text: [tv ? 'TV' : '', g ? 'Grow lights' : ''].filter(Boolean).join(' · '), hot: tv || g }; } },
+        meta: (h) => { const tv = ['on', 'playing', 'paused', 'idle'].includes(st(h, 'media_player.television_2')); const g = growOn(h) > 0; return { text: [tv ? 'TV' : '', g ? 'Grow lights' : ''].filter(Boolean).join(' · '), hot: tv || g }; } },
       { name: 'Office', icon: 'mdi:desk', path: '/home-v2/office',
         meta: (h) => { const n = countOn(h, ['light.office_office_main_lights']); return { text: lights(n), hot: n > 0 }; } },
       { name: 'Basement', icon: 'mdi:stairs-down', path: '/home-v2/basement',
