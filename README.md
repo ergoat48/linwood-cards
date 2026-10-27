@@ -55,7 +55,7 @@ commit is rebuilt and shipped as a new, higher version. (Or in HACS: Linwood Car
 | `src/linwood-calendar-card.js` | 1.1.0 | week strip + agenda |
 | `src/linwood-plant-card.js` | 3.8.0 | plant care tracker + grow lights card |
 | `src/linwood-jump-bar.js` | 1.0.1 | jump-to chips on the Plant Care view |
-| `src/linwood-shell.js` | 1.4.0 | sidebar room navigation / styling |
+| `src/linwood-shell.js` | 1.4.1 | sidebar room navigation / styling |
 | `src/index.js` | — | list of cards that go into the bundle, in order |
 | `hacs.json` | — | HACS manifest (Dashboard repo, file `linwood-cards.js`) |
 | `scripts/denon_signal.py` | — | feeds `sensor.theater_av_signal` (command_line sensor) for the Theater format badges |
