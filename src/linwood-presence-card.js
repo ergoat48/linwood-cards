@@ -1,4 +1,6 @@
-/* Linwood Presence Card v1.0.0 — live floor plan for Everything Presence Lite (LD2450) radar sensors.
+/* Linwood Presence Card v1.0.1 — live floor plan for Everything Presence Lite (LD2450) radar sensors.
+ * v1.0.1: coverage wedge and sensor marker follow the placement rotation only (matches the Presence app); the
+ *   installation angle still applies to target positions and zones.
  * Draws the room the way the Presence app (Zone Configurator) has it — walls, doors, furniture — then the sensor's
  * zones, read live from the polygon text entities (edits in the Zone Editor show up here), and a dot for each person
  * the radar is tracking. Zones light up while someone is in them. Several sensors can share one plan (e.g. the theater
@@ -241,8 +243,10 @@
       }
 
       // Coverage wedges (±60°, sensor max distance).
+      // The sensor's physical aim is the app's placement rotation alone (as the Presence app draws it); the
+      // installation angle only corrects the radar's reported coordinates, so it is not part of the wedge.
       const wedges = this._config.sensors.map((s, i) => {
-        const eff = this._eff(i);
+        const eff = Number(s.rotation) || 0;
         const r = this._mm(this._ids[i].range) || 6000;
         const steps = 24, arc = [];
         for (let j = 0; j <= steps; j++) {
@@ -258,7 +262,7 @@
 
       const devices = this._config.sensors.map((s, i) => {
         const o = this._v([Number(s.x) || 0, Number(s.y) || 0]);
-        const fwd = this._devToRoom(s, this._eff(i), [0, 1]);
+        const fwd = this._devToRoom(s, Number(s.rotation) || 0, [0, 1]);
         const fv = this._v(fwd);
         const ang = (Math.atan2(fv[1] - o[1], fv[0] - o[0]) * 180) / Math.PI - 90;
         const sz = 9 * k, col = s.color || '#a78bfa';
