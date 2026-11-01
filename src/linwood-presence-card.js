@@ -1,4 +1,5 @@
-/* Linwood Presence Card v1.0.1 — live floor plan for Everything Presence Lite (LD2450) radar sensors.
+/* Linwood Presence Card v1.1.0 — live floor plan for Everything Presence Lite (LD2450) radar sensors.
+ * v1.1.0: stairs (treads + up arrow) and column / chimney (solid block) furniture types.
  * v1.0.1: coverage wedge and sensor marker follow the placement rotation only (matches the Presence app); the
  *   installation angle still applies to target positions and zones.
  * Draws the room the way the Presence app (Zone Configurator) has it — walls, doors, furniture — then the sensor's
@@ -16,7 +17,8 @@
  *   walls: [[-1400,-2050], [1400,-2050], [1400,2050], [-1400,2050]]
  *   doors:                        # wall = index of the wall that starts at walls[wall]; at = 0..1 along it
  *     - { wall: 3, at: 0.9, width: 770, swing: in, hinge: right }        # style: single (default) / double / opening
- *   furniture:                    # type: sofa, bed, chair, recliner, desk, table, tv, ... (anything else = plain box)
+ *   furniture:                    # type: sofa, bed, chair, recliner, desk, table, tv, stairs (steps: 7; arrow points up
+ *                                 #   toward +d), column / chimney (solid), ... (anything else = plain box)
  *     - { type: bed, x: 345, y: 447, w: 1600, d: 2100, rot: 90 }
  * sensors:
  *   - id: 278848                  # the device suffix in its entity ids (everything_presence_lite_<id>_...)
@@ -355,6 +357,7 @@
           <svg viewBox="${f1(minX)} ${f1(minY)} ${f1(W)} ${f1(H)}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="${esc(cfg.title || 'Presence')}: ${esc(meta)}">
             <defs>
               ${roomPath ? `<clipPath id="room"><path d="${roomPath}"/></clipPath>` : ''}
+              <pattern id="xhatch" width="${f1(10 * k)}" height="${f1(10 * k)}" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="${f1(10 * k)}" stroke="#9ca3af" stroke-opacity=".22" stroke-width="${f1(1.4 * k)}"/></pattern>
               <pattern id="hatch" width="${f1(14 * k)}" height="${f1(14 * k)}" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="${f1(14 * k)}" stroke="#f87171" stroke-opacity=".25" stroke-width="${f1(2 * k)}"/></pattern>
             </defs>
             ${roomPath ? `<path class="floor" d="${roomPath}"/>` : ''}
@@ -438,6 +441,13 @@
             + `<line class="fl" x1="${f1(-w / 2)}" y1="${f1(-d / 2 + d * 0.3)}" x2="${f1(w / 2)}" y2="${f1(-d / 2 + d * 0.3)}" vector-effect="non-scaling-stroke"/>`;
         } else if (t.includes('chair')) {
           inner = box('fb', -w / 2, -d / 2, w, Math.min(d * 0.22, 160), rx);
+        } else if (t.includes('stair')) {
+          const steps = Math.max(2, Number(f.steps) || Math.round(d / 230));
+          for (let j = 1; j < steps; j++) inner += `<line class="fl st" x1="${f1(-w / 2)}" y1="${f1(-d / 2 + (d * j) / steps)}" x2="${f1(w / 2)}" y2="${f1(-d / 2 + (d * j) / steps)}" vector-effect="non-scaling-stroke"/>`;
+          const a = Math.min(w, d) * 0.16;                     // chevron points up the stairs (toward +d)
+          inner += `<path class="up" d="M${f1(-a)} ${f1(d * 0.32 - a * 0.6)}L0 ${f1(d * 0.32)}L${f1(a)} ${f1(d * 0.32 - a * 0.6)}M0 ${f1(-d * 0.3)}V${f1(d * 0.32)}" vector-effect="non-scaling-stroke"/>`;
+        } else if (t.includes('column') || t.includes('chimney') || t.includes('pillar')) {
+          return `<g class="fur solid" transform="translate(${f1(c[0])} ${f1(c[1])}) rotate(${f1(rot)})">${box('so', -w / 2, -d / 2, w, d, Math.min(w, d) * 0.04)}<rect x="${f1(-w / 2)}" y="${f1(-d / 2)}" width="${f1(w)}" height="${f1(d)}" fill="url(#xhatch)"/></g>`;
         } else if (t.includes('tv')) {
           inner = `<line class="tv" x1="${f1(-w * 0.42)}" y1="${f1(-d / 2 + d * 0.18)}" x2="${f1(w * 0.42)}" y2="${f1(-d / 2 + d * 0.18)}" vector-effect="non-scaling-stroke"/>`;
         }
@@ -470,6 +480,9 @@
 .fur .fb { fill:rgba(255,255,255,0.05); stroke:rgba(255,255,255,0.1); stroke-width:1; }
 .fur .fl { stroke:rgba(255,255,255,0.1); stroke-width:1; }
 .fur .tv { stroke:#94a3b8; stroke-width:2.5; stroke-linecap:round; }
+.fur .st { stroke:rgba(255,255,255,0.16); }
+.fur .up { fill:none; stroke:rgba(255,255,255,0.32); stroke-width:1.3; stroke-linecap:round; stroke-linejoin:round; }
+.fur.solid .so { fill:#2a2d33; stroke:#6b7280; stroke-width:1.5; }
 .cov { pointer-events:none; }
 .zn { fill:color-mix(in srgb, var(--zc) 9%, transparent); stroke:color-mix(in srgb, var(--zc) 55%, transparent); stroke-width:1.5; stroke-linejoin:round; transition:fill .35s, stroke .35s, filter .35s; }
 .zn.lit { fill:color-mix(in srgb, var(--zc) 26%, transparent); stroke:var(--zc); stroke-width:2; filter:drop-shadow(0 0 6px color-mix(in srgb, var(--zc) 70%, transparent)); }
