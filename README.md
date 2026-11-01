@@ -47,7 +47,7 @@ commit is rebuilt and shipped as a new, higher version. (Or in HACS: Linwood Car
 |---|---|---|
 | `src/linwood-kit.js` | 1.3.0 | light, switch, garage cards + the shared `LinwoodKit` base the Theater and TV cards build on |
 | `src/linwood-appletv-card.js` | 1.3.0 | Apple TV now-playing (also embedded as the "screen" in Theater and TV) |
-| `src/linwood-theater-card.js` | 1.4.0 | basement theater: Denon receiver, projector, lamp automation, couch-sensor auto pause / lamp switches, format badges |
+| `src/linwood-theater-card.js` | 1.4.1 | basement theater: Denon receiver, projector, lamp automation, couch-sensor auto pause / lamp switches, format badges |
 | `src/linwood-tv-card.js` | 1.0.1 | bedroom: LG G4, Sonos soundbar, Apple TV |
 | `src/linwood-climate-card.js` | 1.17.0 | dial thermostat with safe per-mode setpoint limits, Auto Home/Away / Sleep / Air Mixing / Fresh Air switches, furnace alert chip + Rooms panel (temperature rail, per-room sparklines, presence, which room the thermostat targets) |
 | `src/linwood-security-card.js` | 1.0.1 | motion radar, room tiles, swimlane timeline, activity feed |

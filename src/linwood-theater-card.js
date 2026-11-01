@@ -1,5 +1,9 @@
-/* Linwood Theater Card v1.4.0 — Apple TV screen, receiver (volume / input / sound mode / tuning), projector and lamp automation.
+/* Linwood Theater Card v1.4.1 — Apple TV screen, receiver (volume / input / sound mode / tuning), projector and lamp automation.
  * Requires Linwood Kit (linwood-kit.js) for the shared base class and styles; embeds linwood-appletv-card for the screen.
+ * v1.4.1: the Auto pause hint says live sports never pause, and switches to "Lions game on" while the game is in progress.
+ *   couch:
+ *     no_pause_apps: [FOX One, ESPN, NFL]   # optional: apps the automation never pauses (hint only)
+ *     game: sensor.lions                    # optional: Team Tracker sensor — state IN = game in progress
  * v1.4.0: "Couch sensor" switches under Devices — turn the get-up / sit-down automation's pause and lamp halves on or off.
  *   couch:
  *     auto_pause: input_boolean.theater_couch_auto_pause   # pause when someone gets up, resume when they sit back down
@@ -100,7 +104,7 @@
       const c = this._config, set = c.settings || {};
       const couch = c.couch || {};
       const ids = [c.receiver, c.projector, c.lamp_automation, c.apple_tv && c.apple_tv.entity, c.formats, ...Object.values(set).filter((v) => typeof v === 'string'),
-        couch.auto_pause, couch.auto_lamp, couch.occupancy];
+        couch.auto_pause, couch.auto_lamp, couch.occupancy, couch.game];
       return ids.map((id) => {
         const s = this._st(id); if (!s) return '-';
         const a = s.attributes;
@@ -226,8 +230,13 @@
     _couchHtml() {
       const cfg = this._config.couch || {};
       const skip = Array.isArray(cfg.skipped_apps) && cfg.skipped_apps.length ? ` · not for ${cfg.skipped_apps.map(esc).join(' or ')}` : '';
+      const live = Array.isArray(cfg.no_pause_apps) && cfg.no_pause_apps.length;
+      const game = cfg.game && this._st(cfg.game);
+      const team = game && esc(game.attributes.team_name || 'Team');
+      const pauseHint = game && game.state === 'IN' ? `${team} game on · won't pause until it ends`
+        : `Pause when you get up, resume when you sit${skip}${live || game ? ` · never during live sports${game ? ` or ${team} games` : ''}` : ''}`;
       const rows = [
-        ['auto_pause', 'Auto pause', 'mdi:motion-pause-outline', `Pause when you get up, resume when you sit${skip}`],
+        ['auto_pause', 'Auto pause', 'mdi:motion-pause-outline', pauseHint],
         ['auto_lamp', 'Auto lamp', 'mdi:lamp', `Lamp on when you get up, off when you sit${skip}`],
       ].filter(([k]) => cfg[k]).map(([k, name, icon, hint]) => {
         const id = cfg[k], st = this._st(id);
