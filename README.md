@@ -53,7 +53,7 @@ commit is rebuilt and shipped as a new, higher version. (Or in HACS: Linwood Car
 | `src/linwood-security-card.js` | 1.0.1 | motion radar, room tiles, swimlane timeline, activity feed |
 | `src/linwood-weather-card.js` | 1.0.0 | live sky scene, current conditions, hourly temperature curve (sunset / sunrise / midnight marked) and weekly range bars |
 | `src/linwood-calendar-card.js` | 1.1.0 | week strip + agenda |
-| `src/linwood-presence-card.js` | 1.1.0 | live floor plan for Everything Presence radar sensors: walls, doors, furniture, live zones (lit while occupied), a gliding dot per person, Entry/Exit hold ring; several sensors can share one plan |
+| `src/linwood-presence-card.js` | 1.2.0 | live floor plan for Everything Presence radar sensors: walls, doors, furniture, live zones (lit while occupied), a gliding dot per person, Entry/Exit hold ring (optionally gated by a helper), floor projection for high tilted sensors; tap for a full-screen view with every zone and per-sensor status; several sensors can share one plan |
 | `src/linwood-plant-card.js` | 3.8.0 | plant care tracker + grow lights card |
 | `src/linwood-jump-bar.js` | 1.0.1 | jump-to chips on the Plant Care view |
 | `src/linwood-shell.js` | 1.4.2 | sidebar room navigation / styling |
