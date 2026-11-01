@@ -1,4 +1,11 @@
-/* Linwood Presence Card v1.2.0 — live floor plan for Everything Presence Lite (LD2450) radar sensors.
+/* Linwood Presence Card v1.3.0 — live floor plan for Everything Presence Lite (LD2450) radar sensors.
+ * v1.3.0: one dot per person across sensors. Each sensor is trusted only outside its own exclusion zones (fading out
+ *   over `blend` mm inside them), so with two sensors the exclusions are the hand-off line; where both still see the
+ *   person their positions are blended (weighted by that trust) into one dot that keeps its identity, so it glides
+ *   across the hand-off instead of jumping or doubling. Per-sensor `correction` (x / y mm, rotate °) lines a sensor's
+ *   targets and zones up with the others. Dots beyond the walls, or parked still at a door / opening, are dropped, so
+ *   a person disappears as they walk out instead of lingering at the edge; a hold whose frozen spot is at an exit (in an
+ *   entry zone, at a door, or beyond the walls) is treated as "left" and not drawn (exit_holds: show to keep them).
  * v1.2.0: tap the plan for a full-screen view (bigger plan, every zone on demand, per-sensor status: tracking /
  *   holding with time left / last Entry/Exit decision). A target the sensor froze when its hold started is drawn as
  *   the hold ring, not as a live person. New sensor options: hold_gate (only show a hold while that entity is on — e.g.
@@ -40,6 +47,13 @@
  *       3: { hide: true }         #   hidden zones still show in the full-screen view's "All zones"
  *       e1: { hide: true }
  *     show_exclusions: false      # optional (default false)
+ *     correction: { x: 265, y: -250, rotate: 0 }   # optional — shifts this sensor's targets and zones (room mm, ° about
+ *                                 #   the sensor), e.g. to make two sensors agree where both see you
+ *     blend: 600                  # optional, mm — how far inside its exclusion zones a target still counts (fading)
+ * merge_distance: 1000            # optional, mm — two sensors' targets closer than this are one person
+ * clip_to_room: true              # optional — drop targets more than wall_margin (default 200 mm) beyond the walls
+ * exit_linger: 3                  # optional, s — a target parked this long at a door / opening is gone (0 = keep)
+ * exit_holds: hide                # optional — hide (default) or show a hold whose frozen spot is at an exit
  *
  * Entities it finds by the id: target_1..3_x / _y / _active, zone_1..4_target_count / _occupancy, *_polygon_zone_N,
  * *_polygon_entry_N, *_polygon_exclusion_N, installation_angle, max_distance, *_assumed_present (+ _remaining),
@@ -55,6 +69,8 @@
   const UNIT_MM = { mm: 1, cm: 10, m: 1000, in: 25.4, ft: 304.8 };
   const TRAIL_MS = 2600;
   const FROZEN_MS = 1500;          // a target whose x/y last moved before (hold start + this) is the sensor's frozen copy
+  const SLOTS = 6;                 // person dots kept as fixed nodes so they glide
+  const MERGE_MM = 1000, BLEND_MM = 600, WALL_MM = 200, EXIT_MM = 500, LINGER_S = 3, MIN_TRUST = 0.3, TRACK_MM = 1600;
   const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : null; };
   const f1 = (n) => Math.round(n * 10) / 10;
   const ts = (iso) => { const t = Date.parse(iso); return Number.isFinite(t) ? t : 0; };
@@ -98,6 +114,13 @@
     }
     return out;
   };
+  const segDist = (p, a, b) => {
+    const dx = b[0] - a[0], dy = b[1] - a[1], L = dx * dx + dy * dy;
+    const t = L ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L)) : 0;
+    return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy);
+  };
+  const polyDist = (p, poly) => { let d = Infinity; for (let i = 0; i < poly.length; i++) d = Math.min(d, segDist(p, poly[i], poly[(i + 1) % poly.length])); return d; };
+  const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
   const titleCase = (s) => s.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 
   class LinwoodPresenceCard extends LinwoodBase {
@@ -106,14 +129,21 @@
       for (const s of config.sensors) if (!s || s.id == null) throw new Error('Every sensor needs an "id" (the device suffix, e.g. 95f28c)');
       this._ids = null;          // entity ids, resolved on the first hass
       this._trails = {};
-      this._last = {};           // last live position per target (for the hold ring)
+      this._last = {};           // last live position per sensor target (for the hold ring)
+      this._tracks = [];         // people: { id, slot, pos, c } — one per merged cluster, kept across renders
+      this._tid = 0;
+      this._slotLast = {};       // where each dot slot was last drawn (it fades out there)
       super.setConfig(config);
     }
     getCardSize() { return 7; }
     getGridOptions() { return { columns: 12, rows: 'auto', min_columns: 6 }; }
 
     connectedCallback() {
-      this._tick = setInterval(() => { if (Object.keys(this._trails).length) this._render(true); }, 450);
+      // Trails fade and parked-at-the-exit dots drop on time alone, so keep rendering while either is on screen.
+      this._tick = setInterval(() => {
+        if (Object.keys(this._trails).length) this._render(true);
+        else if (this._tracks.length && Date.now() - (this._lastForce || 0) > 1000) { this._lastForce = Date.now(); this._render(true); }
+      }, 450);
     }
     disconnectedCallback() {
       clearInterval(this._tick); this._tick = null;
@@ -195,7 +225,36 @@
       const f = Math.sqrt(Math.max(r * r - dh * dh, 0)) / r;
       return [p[0] * f, p[1] * f];
     }
-    _toRoom(i, p) { return this._devToRoom(this._config.sensors[i], this._eff(i), this._proj(i, p)); }
+    _toRoom(i, p) {
+      const s = this._config.sensors[i];
+      const q = this._devToRoom(s, this._eff(i), this._proj(i, p));
+      const c = s.correction;
+      if (!c) return q;
+      const ox = Number(s.x) || 0, oy = Number(s.y) || 0;
+      const a = ((Number(c.rotate) || 0) * Math.PI) / 180, co = Math.cos(a), si = Math.sin(a);
+      const dx = q[0] - ox, dy = q[1] - oy;
+      return [ox + dx * co - dy * si + (Number(c.x) || 0), oy + dx * si + dy * co + (Number(c.y) || 0)];
+    }
+    /* A sensor's entry or exclusion polygons in room coordinates. */
+    _polys(i, kind) {
+      return this._ids[i].zones.filter((z) => z.kind === kind).map((z) => parsePoly(this._st(z.poly)?.state)).filter(Boolean)
+        .map((dev) => (this._dh(i) ? densify(dev, 250) : dev).map((p) => this._toRoom(i, p)));
+    }
+    /* Doors and openings as wall segments. */
+    _exits(walls) { return this._doorGeos(walls).map((g) => [g.e0, g.e1]); }
+    _atExit(p, g, r) { return g.exits.some((x) => segDist(p, x[0], x[1]) < r) || (g.walls.length >= 3 && !inside(p, g.walls)); }
+    /* How far to trust one target (0..1): fades out inside this sensor's exclusions, 0 well beyond the walls or when it
+     * has sat still at a door / opening (the radar parks a lost person there). */
+    _trust(i, p, g) {
+      const cfg = this._config, s = cfg.sensors[i];
+      let w = 1;
+      const blend = num(s.blend ?? cfg.blend) ?? BLEND_MM;
+      for (const poly of g.excl) if (inside(p, poly)) w = Math.min(w, blend > 0 ? 1 - polyDist(p, poly) / blend : 0);
+      if (g.walls.length >= 3 && cfg.clip_to_room !== false && !inside(p, g.walls) && polyDist(p, g.walls) > (num(cfg.wall_margin) ?? WALL_MM)) return 0;
+      const linger = num(cfg.exit_linger) ?? LINGER_S;
+      if (linger > 0 && g.still > linger && this._atExit(p, g, EXIT_MM)) return 0;
+      return Math.max(0, w);
+    }
     _mm(id) {
       const st = this._st(id);
       if (!st) return null;
@@ -218,12 +277,17 @@
       return { on, holding: on && !gated, ignored: on && gated, since: on ? ts(hst.last_changed) : 0, gate };
     }
 
-    /* Live targets in room coordinates, de-duplicated across sensors (closer sensor wins), plus where each holding
-     * sensor's ring goes and how many live targets each sensor has. */
+    /* People in room coordinates: every sensor's trusted targets, merged across sensors (a cluster of nearby targets
+     * from different sensors is one person, placed at their trust-weighted average) and matched to the people of the
+     * last render so each keeps its dot. Plus where each holding sensor's ring goes, and live targets per sensor. */
     _scan() {
-      const out = [], held = [], perSensor = [];
-      this._config.sensors.forEach((s, i) => {
+      const cfg = this._config, now = Date.now();
+      const walls = this._walls();
+      const exits = this._exits(walls);
+      const cand = [], held = [], perSensor = [], exitHold = [];
+      cfg.sensors.forEach((s, i) => {
         const e = this._ids[i], h = this._hold(i);
+        const g = { walls, exits, excl: s.use_exclusions === false ? [] : this._polys(i, 'excl'), entry: this._polys(i, 'entry'), still: 0 };
         let frozen = null, n0 = 0;
         e.targets.forEach((t, n) => {
           const key = `${s.id}-${n + 1}`;
@@ -232,12 +296,18 @@
           const x = this._mm(t.x), y = this._mm(t.y);
           if (x == null || y == null || (x === 0 && y === 0)) return;
           const pos = this._toRoom(i, [x, y]);
+          const moved = Math.max(ts(xs.last_changed), ts(ys.last_changed));
           // While a hold is on, the sensor keeps the lost target "active" with its last x/y — that is the hold, not a person.
-          if (h.on && ts(xs.last_changed) <= h.since + FROZEN_MS && ts(ys.last_changed) <= h.since + FROZEN_MS) { if (!frozen) frozen = pos; return; }
+          if (h.on && moved <= h.since + FROZEN_MS) { if (!frozen) frozen = pos; return; }
+          g.still = (now - moved) / 1000;
+          const w = this._trust(i, pos, g);
+          if (w < MIN_TRUST) return;
           n0++;
-          out.push({ key, i, n, pos, range: Math.hypot(x, y), color: s.color || DOT_COLORS[i % DOT_COLORS.length] });
+          this._last[key] = { p: pos, t: now };
+          cand.push({ i, n, pos, w, color: s.color || DOT_COLORS[i % DOT_COLORS.length] });
         });
         perSensor.push(n0);
+        exitHold.push(false);
         if (h.holding) {
           let hp = frozen;
           if (!hp) {                                            // most recent live position we saw from this sensor
@@ -248,15 +318,53 @@
             const lx = this._mm(e.last[0]), ly = this._mm(e.last[1]);
             if (lx != null && ly != null) hp = this._toRoom(i, [lx, ly]);
           }
+          // Lost at an exit (entry zone, door, beyond the walls): they left, whatever the firmware decided.
+          if (hp && cfg.exit_holds !== 'show' && (g.entry.some((poly) => inside(hp, poly) || polyDist(hp, poly) < 150) || this._atExit(hp, g, EXIT_MM + 200))) {
+            exitHold[i] = true; hp = null;
+          }
           if (hp) held.push({ key: `${s.id}-h`, i, pos: hp, color: s.color || '#e5e7eb' });
         }
       });
-      const keep = [];
-      for (const t of out.sort((a, b) => a.range - b.range)) {
-        if (keep.some((k) => k.i !== t.i && Math.hypot(k.pos[0] - t.pos[0], k.pos[1] - t.pos[1]) < 700)) continue;
-        keep.push(t);
+      const mergeMm = num(cfg.merge_distance) ?? MERGE_MM;
+      const clusters = [];
+      for (const c of cand.sort((a, b) => b.w - a.w)) {
+        let best = null, bd = mergeMm;
+        for (const k of clusters) {
+          if (k.sensors.has(c.i)) continue;                   // one sensor's targets are different people
+          const d = dist(k.pos, c.pos);
+          if (d < bd) { bd = d; best = k; }
+        }
+        if (!best) { clusters.push({ items: [c], sensors: new Set([c.i]), pos: c.pos }); continue; }
+        best.items.push(c); best.sensors.add(c.i);
+        const W = best.items.reduce((a, x) => a + x.w, 0);
+        best.pos = [best.items.reduce((a, x) => a + x.pos[0] * x.w, 0) / W, best.items.reduce((a, x) => a + x.pos[1] * x.w, 0) / W];
       }
-      return { targets: keep, held, perSensor };
+      return { targets: this._assign(clusters, now), held, perSensor, exitHold };
+    }
+
+    /* Match this render's clusters to the people already on the plan (nearest first), so a dot keeps its slot. */
+    _assign(clusters, now) {
+      const old = this._tracks, pairs = [];
+      old.forEach((t, ti) => clusters.forEach((c, ci) => { const d = dist(t.pos, c.pos); if (d < TRACK_MM) pairs.push([d, ti, ci]); }));
+      pairs.sort((a, b) => a[0] - b[0]);
+      const tUsed = new Set(), cUsed = new Set(), next = [];
+      for (const [, ti, ci] of pairs) {
+        if (tUsed.has(ti) || cUsed.has(ci)) continue;
+        tUsed.add(ti); cUsed.add(ci);
+        next.push({ ...old[ti], pos: clusters[ci].pos, c: clusters[ci] });
+      }
+      old.forEach((t, ti) => { if (!tUsed.has(ti)) this._slotLast[t.slot] = { p: t.pos, t: now }; });
+      clusters.forEach((c, ci) => {
+        if (cUsed.has(ci)) return;
+        const busy = new Set(next.map((t) => t.slot));
+        const free = [...Array(SLOTS).keys()].filter((k) => !busy.has(k)).sort((a, b) => ((this._slotLast[a] || {}).t || 0) - ((this._slotLast[b] || {}).t || 0));
+        if (free.length) next.push({ id: ++this._tid, slot: free[0], pos: c.pos, c });
+      });
+      this._tracks = next;
+      return next.map((t) => {
+        const top = t.c.items[0];
+        return { key: `p${t.id}`, slot: t.slot, i: top.i, pos: t.pos, color: top.color, sensors: t.c.items.length };
+      });
     }
 
     _zones(all) {
@@ -308,7 +416,6 @@
         const tr = (this._trails[t.key] = this._trails[t.key] || []);
         const last = tr[tr.length - 1];
         if (!last || Math.hypot(last.p[0] - t.pos[0], last.p[1] - t.pos[1]) > 25) tr.push({ p: t.pos, t: now });
-        this._last[t.key] = { p: t.pos, t: now };
       }
       for (const key of Object.keys(this._trails)) {
         this._trails[key] = this._trails[key].filter((s) => now - s.t < TRAIL_MS);
@@ -446,28 +553,24 @@
         }).join('');
       }).join('');
 
-      // One node per target slot (and one hold ring per sensor) so a dot glides (CSS transition) instead of being recreated.
+      // A fixed node per person slot (and one hold ring per sensor) so a dot glides (CSS transition) instead of being recreated.
       const r = 7.5 * k;
-      const dotSvg = cfg.sensors.flatMap((s, i) => {
-        const slots = [1, 2, 3].map((n) => {
-          const key = `${s.id}-${n}`;
-          const t = targets.find((x) => x.key === key);
-          if (!t) {
-            const lp = this._last[key] ? this._v(this._last[key].p) : [0, 0];
-            return `<g class="dot off" data-k="${key}" style="transform:translate(${f1(lp[0])}px,${f1(lp[1])}px)"></g>`;
-          }
-          const q = this._v(t.pos);
-          return `<g class="dot" data-k="${key}" style="transform:translate(${f1(q[0])}px,${f1(q[1])}px);--dc:${t.color}">
-            <circle class="halo" r="${f1(r * 2.6)}" fill="${t.color}"/>
-            <circle class="core" r="${f1(r)}" fill="${t.color}" stroke="#0b0c10" stroke-width="2" vector-effect="non-scaling-stroke"/></g>`;
-        });
+      const dotSvg = [...Array(SLOTS).keys()].map((slot) => {
+        const t = targets.find((x) => x.slot === slot);
+        if (!t) {
+          const l = this._slotLast[slot], lp = l ? this._v(l.p) : [0, 0];
+          return `<g class="dot off" style="transform:translate(${f1(lp[0])}px,${f1(lp[1])}px)"></g>`;
+        }
+        const q = this._v(t.pos);
+        return `<g class="dot" data-k="${t.key}" style="transform:translate(${f1(q[0])}px,${f1(q[1])}px);--dc:${t.color}">
+            <circle class="halo" r="${f1(r * 2.6)}" style="fill:${t.color}"/>
+            <circle class="core" r="${f1(r)}" style="fill:${t.color}" stroke="#0b0c10" stroke-width="2" vector-effect="non-scaling-stroke"/></g>`;
+      }).concat(cfg.sensors.map((s, i) => {
         const h = held.find((x) => x.i === i);
-        const hq = h ? this._v(h.pos) : null;
-        slots.push(h
-          ? `<g class="dot held" data-k="${s.id}-h" style="transform:translate(${f1(hq[0])}px,${f1(hq[1])}px)"><circle class="ring" r="${f1(r * 1.25)}" stroke="${h.color}" vector-effect="non-scaling-stroke"/><circle class="pin" r="${f1(r * 0.3)}" fill="${h.color}"/></g>`
-          : `<g class="dot off" data-k="${s.id}-h"></g>`);
-        return slots;
-      }).join('');
+        if (!h) return `<g class="dot off" data-k="${s.id}-h"></g>`;
+        const hq = this._v(h.pos);
+        return `<g class="dot held" data-k="${s.id}-h" style="transform:translate(${f1(hq[0])}px,${f1(hq[1])}px)"><circle class="ring" r="${f1(r * 1.25)}" stroke="${h.color}" vector-effect="non-scaling-stroke"/><circle class="pin" r="${f1(r * 0.3)}" fill="${h.color}"/></g>`;
+      })).join('');
 
       return `<svg class="pl" viewBox="${f1(minX)} ${f1(minY)} ${f1(W)} ${f1(H)}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="${esc(cfg.title || 'Presence')}: ${esc(meta)}">
             <defs>
@@ -531,17 +634,18 @@
         const name = s.name || e.area || `Sensor ${s.id}`;
         const col = s.color || DOT_COLORS[i % DOT_COLORS.length];
         let state, cls = '';
-        if (h.holding) {
+        if (h.holding && !scan.exitHold[i]) {
           const rem = this._st(e.remaining);
           const left = rem && num(rem.state) != null ? num(rem.state) - (now - ts(rem.last_updated)) / 1000 : null;
           state = `Holding${left != null && left > 0 ? ` · ${dur(left)} left` : ''}`; cls = 'hold';
         } else if (n) { state = n === 1 ? 'Tracking 1 person' : `Tracking ${n} people`; cls = 'live'; }
         else state = 'Clear';
         const sub = [];
-        if (h.ignored) sub.push(`Hold ignored — ${esc((h.gate && h.gate.attributes.friendly_name) || s.hold_gate)} is off`);
+        if (scan.exitHold[i] && h.holding) sub.push('Hold ignored — lost at the exit');
+        else if (h.ignored) sub.push(`Hold ignored — ${esc((h.gate && h.gate.attributes.friendly_name) || s.hold_gate)} is off`);
         const dec = this._st(e.decision);
         if (dec && !['unknown', 'unavailable', ''].includes(dec.state)) sub.push(`Last: ${esc(dec.state)} · ${esc(ago(dec.last_changed))}`);
-        if (n && h.holding) sub.unshift(`${n} live`);
+        if (n && h.holding && !scan.exitHold[i]) sub.unshift(`${n} live`);
         const range = this._mm(e.range);
         if (range) sub.push(`Range ${f1(range / 1000)} m`);
         return `<div class="srow ${cls}"><span class="sd" style="--dc:${col}"></span><span class="sn"><b>${esc(name)}</b><i>${sub.join(' · ')}</i></span><span class="ss">${esc(state)}</span></div>`;
@@ -707,7 +811,8 @@
 .dot { transition:transform .32s linear, opacity .4s; }
 .dot.off { opacity:0; }
 .dot .halo { opacity:.18; animation:breathe 2.4s ease-in-out infinite; transform-box:fill-box; transform-origin:center; }
-.dot .core { filter:drop-shadow(0 0 4px var(--dc)); }
+.dot .core { filter:drop-shadow(0 0 4px var(--dc)); transition:fill .6s; }
+.dot .halo { transition:fill .6s; }
 .dot.held .ring { fill:none; stroke-width:2; stroke-dasharray:4 3; opacity:.75; animation:hold 1.8s ease-in-out infinite; transform-box:fill-box; transform-origin:center; }
 .dot.held .pin { opacity:.45; }
 .trl { stroke-linecap:round; }
