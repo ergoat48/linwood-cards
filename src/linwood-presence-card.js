@@ -1,4 +1,7 @@
-/* Linwood Presence Card v1.3.0 — live floor plan for Everything Presence Lite (LD2450) radar sensors.
+/* Linwood Presence Card v1.4.0 — live floor plan for Everything Presence Lite (LD2450) radar sensors.
+ * v1.4.0: zones.N.shape — draw a zone as a tidy outline in room coordinates (lined up with the walls and furniture)
+ *   instead of its raw polygon; it still lights from the sensor. "All zones" in the full-screen view shows the raw
+ *   polygons the sensor actually uses.
  * v1.3.0: one dot per person across sensors. Each sensor is trusted only outside its own exclusion zones (fading out
  *   over `blend` mm inside them), so with two sensors the exclusions are the hand-off line; where both still see the
  *   person their positions are blended (weighted by that trust) into one dot that keeps its identity, so it glides
@@ -46,6 +49,8 @@
  *       2: { name: Walkway }      #   names default to the polygon entity's name ("Bed Polygon" → Bed)
  *       3: { hide: true }         #   hidden zones still show in the full-screen view's "All zones"
  *       e1: { hide: true }
+ *       1: { shape: [[-2980,-1410], [-110,-1410], [-110,-3150], [905,-3150], [905,-390], [-2980,-390]] }
+ *                                 #   shape: draw the zone as this outline (room mm, like walls) — display only
  *     show_exclusions: false      # optional (default false)
  *     correction: { x: 265, y: -250, rotate: 0 }   # optional — shifts this sensor's targets and zones (room mm, ° about
  *                                 #   the sensor), e.g. to make two sensors agree where both see you
@@ -385,7 +390,9 @@
           const fallback = z.kind === 'zone' ? `Zone ${z.n}` : z.kind === 'entry' ? `Entry ${z.n}` : `Exclusion ${z.n}`;
           const name = o.name || named(st, /\s*polygon\s*$/i) || (z.count && named(this._st(z.count), /\s*target count\s*$/i)) || fallback;
           if (this._dh(i)) dev = densify(dev, 250);
-          const room = dev.map((p) => this._toRoom(i, p));
+          // A tidy display outline (room coordinates) stands in for the raw polygon, except in "All zones".
+          const shape = !all && Array.isArray(o.shape) ? o.shape.map((q) => (Array.isArray(q) ? [Number(q[0]), Number(q[1])] : [Number(q.x), Number(q.y)])).filter((q) => q.every(Number.isFinite)) : null;
+          const room = shape && shape.length >= 3 ? shape : dev.map((p) => this._toRoom(i, p));
           const count = z.count ? num(this._st(z.count)?.state) : null;
           const occ = z.occ ? this._st(z.occ) : null;
           list.push({ ...z, key: `${s.id}-${z.slot}`, name, color: o.color, room, count, occ, hidden });
