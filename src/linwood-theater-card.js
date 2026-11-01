@@ -1,5 +1,11 @@
-/* Linwood Theater Card v1.3.2 — Apple TV screen, receiver (volume / input / sound mode / tuning), projector and lamp automation.
+/* Linwood Theater Card v1.4.0 — Apple TV screen, receiver (volume / input / sound mode / tuning), projector and lamp automation.
  * Requires Linwood Kit (linwood-kit.js) for the shared base class and styles; embeds linwood-appletv-card for the screen.
+ * v1.4.0: "Couch sensor" switches under Devices — turn the get-up / sit-down automation's pause and lamp halves on or off.
+ *   couch:
+ *     auto_pause: input_boolean.theater_couch_auto_pause   # pause when someone gets up, resume when they sit back down
+ *     auto_lamp: input_boolean.theater_couch_auto_lamp     # lamp on when someone gets up, back off when they sit
+ *     occupancy: binary_sensor.everything_presence_lite_95f28c_zone_1_occupancy   # optional: "On the couch" / "Couch empty"
+ *     skipped_apps: [YouTube, Music]                       # optional: shown in the hint; the automation does the skipping
  * v1.3.2: re-renders patch the existing DOM instead of replacing it (innerHTML). Rebuilding recreated every ha-icon, which
  *   render a frame late at zero width — the panel briefly shrank and iOS (no scroll anchoring) clamped the page upward.
  * v1.3.1: no double-tap zoom on iOS (touch-action: manipulation on every control); tuning steppers update in place;
@@ -92,7 +98,9 @@
     _xpSave(v) { this._xpState = v; try { window.localStorage.setItem(`linwood-theater-xp:${this._config.receiver}`, v ? '1' : '0'); } catch (e) { /* ignore */ } }
     _signature() {
       const c = this._config, set = c.settings || {};
-      const ids = [c.receiver, c.projector, c.lamp_automation, c.apple_tv && c.apple_tv.entity, c.formats, ...Object.values(set).filter((v) => typeof v === 'string')];
+      const couch = c.couch || {};
+      const ids = [c.receiver, c.projector, c.lamp_automation, c.apple_tv && c.apple_tv.entity, c.formats, ...Object.values(set).filter((v) => typeof v === 'string'),
+        couch.auto_pause, couch.auto_lamp, couch.occupancy];
       return ids.map((id) => {
         const s = this._st(id); if (!s) return '-';
         const a = s.attributes;
@@ -114,6 +122,7 @@
       if (this._card.className !== cls) this._card.className = cls;
       patchHtml(this._top, this._topHtml(r, rOn, pOn));
       patchHtml(this._devs, this._devsHtml(r, rOn, p, pOn));
+      patchHtml(this._couch, this._couchHtml());
       patchHtml(this._recv, this._recvHtml(r, rOn));
       patchHtml(this._colC, rOn ? this._tuneHtml(r) : this._tuneSummary(r));
       this._colC.classList.toggle('idle', !rOn);
@@ -123,9 +132,9 @@
     _build() {
       this.shadowRoot.innerHTML = `<style>${BASE_CSS}${this._css()}</style>
 <div class="card"><div class="amb"></div><div class="top"></div>
-  <div class="body"><div class="colA"><div class="scrw"><div class="scr"></div></div><div class="fmt" aria-live="polite"></div></div><div class="colB"><div class="devs"></div><div class="recv"></div></div><div class="colC"></div></div></div>`;
+  <div class="body"><div class="colA"><div class="scrw"><div class="scr"></div></div><div class="fmt" aria-live="polite"></div></div><div class="colB"><div class="devs"></div><div class="couch"></div><div class="recv"></div></div><div class="colC"></div></div></div>`;
       const q = (s) => this.shadowRoot.querySelector(s);
-      this._card = q('.card'); this._top = q('.top'); this._devs = q('.devs'); this._recv = q('.recv'); this._colC = q('.colC'); this._fmt = q('.fmt');
+      this._card = q('.card'); this._top = q('.top'); this._devs = q('.devs'); this._couch = q('.couch'); this._recv = q('.recv'); this._colC = q('.colC'); this._fmt = q('.fmt');
       this._fmtLast = '';
       this._skel = true;
       const atvCfg = this._config.apple_tv;
@@ -212,6 +221,24 @@
       if (lamp) tiles.push(tile('lamp', lamp.state === 'on' ? 'mdi:lamp' : 'mdi:lamp-outline', 'Lamp auto', lamp.state === 'on', lamp.state === 'on' ? 'Follows TV' : 'Manual', '#34d399', lamp.state === 'unavailable'));
       const on = (this._devsOn = tiles.filter((t) => t.startsWith('<button class="dev on"')).length);
       return `<div class="sh"><span class="k">Devices</span><span class="kv">${on} of ${tiles.length} on</span></div><div class="grid">${tiles.join('')}</div>`;
+    }
+    /* Couch sensor: on/off switches for the get-up / sit-down automation. Works with the receiver off too. */
+    _couchHtml() {
+      const cfg = this._config.couch || {};
+      const skip = Array.isArray(cfg.skipped_apps) && cfg.skipped_apps.length ? ` · not for ${cfg.skipped_apps.map(esc).join(' or ')}` : '';
+      const rows = [
+        ['auto_pause', 'Auto pause', 'mdi:motion-pause-outline', `Pause when you get up, resume when you sit${skip}`],
+        ['auto_lamp', 'Auto lamp', 'mdi:lamp', `Lamp on when you get up, off when you sit${skip}`],
+      ].filter(([k]) => cfg[k]).map(([k, name, icon, hint]) => {
+        const id = cfg[k], st = this._st(id);
+        if (!st) return `<div class="tr na"><span class="ti"><ha-icon icon="mdi:alert"></ha-icon></span><span class="tn"><b>${name}</b><i>Missing ${esc(id)}</i></span></div>`;
+        const p = this._pval(id), on = p != null ? p : st.state === 'on';
+        return `<div class="tr"><span class="ti"><ha-icon icon="${icon}"></ha-icon></span><span class="tn"><b>${name}</b><i>${hint}</i></span><button class="tg${on ? ' on' : ''}" data-act="bool" data-id="${esc(id)}" role="switch" aria-checked="${on}" aria-label="${name}" ${st.state === 'unavailable' ? 'disabled' : ''}></button></div>`;
+      }).join('');
+      if (!rows) return '';
+      const occ = cfg.occupancy && this._st(cfg.occupancy);
+      const kv = !occ || ['unavailable', 'unknown'].includes(occ.state) ? '' : occ.state === 'on' ? 'On the couch' : 'Couch empty';
+      return `<div class="sh"><span class="k">Couch sensor</span>${kv ? `<span class="kv cocc${occ.state === 'on' ? ' on' : ''}"><i></i>${kv}</span>` : ''}</div><div class="crows">${rows}</div>`;
     }
     _srcName(s) { if (!s) return ''; const n = (this._config.source_names || {})[s]; return n || SRC_NAMES[String(s).toLowerCase()] || titleCase(s); }
     _modeMeta(m) { const k = String(m || '').toUpperCase(); const mm = MODE_META[k]; return mm || [titleCase(m || ''), 'mdi:surround-sound']; }
@@ -467,6 +494,13 @@ ha-icon { flex:none; }
 .fb.fi { padding:0 8px; } .fb.fi img { height:26px; width:auto; display:block; }
 .fsep { width:1px; height:28px; margin:0 2px; background:rgba(255,255,255,.14); }
 .devs { display:flex; flex-direction:column; gap:10px; }
+.couch { display:flex; flex-direction:column; gap:10px; }
+.couch:empty { display:none; }
+.crows { display:grid; grid-template-columns:minmax(0,1fr); gap:8px; }
+@container (min-width: 520px) { .crows { grid-template-columns:minmax(0,1fr) minmax(0,1fr); } }
+.cocc { display:inline-flex; align-items:center; gap:7px; color:#8b919c; }
+.cocc i { width:7px; height:7px; border-radius:50%; background:#4b5563; }
+.cocc.on { color:#cbd5e1; } .cocc.on i { background:#34d399; box-shadow:0 0 8px rgba(52,211,153,.7); }
 .grid { display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:8px; }
 .dev { position:relative; display:flex; flex-direction:column; align-items:flex-start; gap:4px; padding:11px 10px 10px; border-radius:18px; min-width:0; text-align:left;
   background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.06); transition:all .25s; }
