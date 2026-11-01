@@ -11,6 +11,7 @@ export const files = [
   'linwood-weather-card.js',
   'linwood-calendar-card.js',
   'linwood-plant-card.js',
+  'linwood-presence-card.js',
   'linwood-jump-bar.js',
   'linwood-shell.js',
 ];
