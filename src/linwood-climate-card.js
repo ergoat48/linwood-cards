@@ -1,4 +1,7 @@
-/* Linwood Climate Card v1.17.0 — custom dial thermostat for Home Assistant
+/* Linwood Climate Card v1.18.0 — custom dial thermostat for Home Assistant
+ * v1.18.0: the "Auto Sleep" row no longer describes bed-triggered Sleep. Sleep now starts from the ecobee schedule or the
+ *         Comfort menu, and the row's automation only ends it when you get up: "Sleep · 2 h 10 min", "Home when you get
+ *         up", "Off · ecobee schedule". `auto_sleep.bed` is gone (ignored if still set).
  * v1.17.0: `auto_sleep:` adds an "Auto Sleep" row (same style as the others) for a bed-presence automation that holds
  *         the Sleep comfort while you're in bed: `{ entity:, active:, bed: }` — `entity` the on/off switch, `active` a
  *         boolean that's on while you're asleep, `bed` (optional) the bed-zone occupancy. Status: "Asleep · 2 h 10 min",
@@ -344,21 +347,20 @@ class LinwoodClimateCard extends HTMLElement {
       ? `<span class="aad"><ha-icon icon="mdi:map-marker-distance"></ha-icon>${this._fmt(Math.round(aa.dist * 10) / 10)}${aa.unit ? ' ' + lccEsc(aa.unit) : ''}</span>` : '';
     return this._rowHtml('autoaway', 'Auto Home/Away', aa, `<ha-icon icon="${aa.on && aa.active ? 'mdi:home-export-outline' : 'mdi:home-switch-outline'}"></ha-icon>`, sub, dist);
   }
-  /* `auto_sleep:` → adds since (ms since `active` last changed, i.e. how long asleep / awake) and inBed (`bed:` on). */
+  /* `auto_sleep:` → adds since (ms since `active` last changed, i.e. how long Sleep has been running). */
   _autoSleep() {
     const r = this._switchRow('auto_sleep');
     if (!r) return null;
-    const as = this._st(r.cfg.active), bs = this._st(r.cfg.bed);
+    const as = this._st(r.cfg.active);
     const since = as ? Date.now() - Date.parse(as.last_changed) : NaN;
-    return Object.assign(r, { since: isFinite(since) ? since : null, inBed: !!bs && bs.state === 'on' });
+    return Object.assign(r, { since: isFinite(since) ? since : null });
   }
   _autoSleepHtml(sl) {
     let sub;
     if (sl.dis) sub = 'Offline';
     else if (!sl.on) sub = sl.active ? 'Off · leaving Sleep' : 'Off · ecobee schedule';
-    else if (sl.active) sub = sl.since != null ? `Asleep · ${lccAgo(sl.since)}` : 'Asleep';
-    else if (sl.inBed) sub = 'In bed · Sleep starts soon';
-    else sub = 'Sleeps when you’re in bed';
+    else if (sl.active) sub = sl.since != null ? `Sleep · ${lccAgo(sl.since)}` : 'Sleep';
+    else sub = 'Home when you get up';
     const icon = `<ha-icon icon="${sl.on && sl.active ? 'mdi:power-sleep' : sl.on ? 'mdi:bed-clock' : 'mdi:bed-outline'}"></ha-icon>`;
     return this._rowHtml('autosleep', 'Auto Sleep', sl, icon, sub, '');
   }
@@ -504,7 +506,7 @@ class LinwoodClimateCard extends HTMLElement {
     const ids = [c.weather, c.humidity, c.humidifier, c.comfort, c.room && c.room.temperature, c.room && c.room.humidity];
     this._rooms.forEach((r) => ids.push(r.temperature, r.humidity, r.motion, r.occupancy, r.battery));
     ids.push(c.sleep, c.pin, c.pin_timer);
-    ['auto_away', 'auto_sleep', 'auto_mix', 'auto_air'].forEach((k) => { const rc = this._rowCfg(k) || {}; ids.push(rc.entity, rc.active, rc.distance, rc.lead, rc.spread, rc.paused, rc.co2, rc.voc, rc.bed); });
+    ['auto_away', 'auto_sleep', 'auto_mix', 'auto_air'].forEach((k) => { const rc = this._rowCfg(k) || {}; ids.push(rc.entity, rc.active, rc.distance, rc.lead, rc.spread, rc.paused, rc.co2, rc.voc); });
     ids.push(c.heat_alert);
     const hd = this._st(c.hold);
     parts.push(hd ? String(hd.attributes.preset_mode) : '-');
