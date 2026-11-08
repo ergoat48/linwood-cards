@@ -1,4 +1,7 @@
-/* Linwood Plant Card v3.8.0 — illustrated plant-care tracker for the Plant Care page.
+/* Linwood Plant Card v3.8.1 — illustrated plant-care tracker for the Plant Care page.
+ * v3.8.1: every soil check now counts toward the action counts (header "things to do", Due today, Needs-you chips and
+ *         the sidebar badge) — including pots still learning their dry-down time, which follow the care guide's
+ *         `check` cadence. Before, only learned pots counted, so the counts showed feedings and water changes only.
  * v3.8.0: grouped RF lights. A Grow Lights entry with `bars:` (both SANSI mantel bars, plugs on 24/7, switched together
  *         over RF) renders as one row: one tap runs its power_script, each bar's wattage / level vs. target, one Fix
  *         button, "Adjusting…" while its scripts run, "No power" if either plug is cut, and a warning when one bar is
@@ -19,8 +22,8 @@
  *         dry" a day past typical. Until then it shows "Learning n/4" and the care guide's `check` cadence. Dates are
  *         kept in an input_text log written by script.plant_log_watering (HA history only reaches back ~10 days);
  *         "Still moist" stamps an input_datetime and snoozes the plant for `recheck` days. Same rules as the "Plant
- *         watering reminders" automation. Learned plants that are due count in the header, the Needs-you chips and
- *         the sidebar badge. The humidifier popup now stays inside the iPhone safe area (status bar / home indicator),
+ *         watering reminders" automation. Plants whose soil check is due count in the header, the Needs-you chips and
+ *         the sidebar badge (3.8.1: learning pots count too). The humidifier popup now stays inside the iPhone safe area (status bar / home indicator),
  *         so the separate Safe Area add-on stands down.
  * v3.5.4: redrawn Monstera (heart-shaped leaves with splits and holes, held out on arching petioles, one new uncut leaf)
  *         and Lemon Lime (two woody canes rising out of the pot, crowned with arching striped leaves).
@@ -585,7 +588,7 @@ const lpcWatering = (hass, cfg, p) => {
   let recheckOn = null;
   if (snoozed) { recheckOn = lpcDayOf(ckKey); recheckOn.setDate(recheckOn.getDate() + S.recheck); }
   const pct = typical && since != null ? Math.min(1, Math.max(0, since / typical)) : 0;
-  return { w, S, dates, gaps, recent, learned, guide, typical, checkDay, last, since, status, left, pct, ckKey, recheckOn, today, learning: learned == null, need: learned != null && lpcNeeds(status) };
+  return { w, S, dates, gaps, recent, learned, guide, typical, checkDay, last, since, status, left, pct, ckKey, recheckOn, today, learning: learned == null, need: lpcNeeds(status) };
 };
 
 const lpcModel = (hass, cfg, p, season) => {
