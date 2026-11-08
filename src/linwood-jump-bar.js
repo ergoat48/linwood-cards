@@ -1,4 +1,5 @@
-/* Linwood Jump Bar v1.0.1 — "jump to" chips for the Plant Care view.
+/* Linwood Jump Bar v1.0.2 — "jump to" chips for the Plant Care view.
+ *  v1.0.2: the amber dot also marks pots whose soil check is due while they're still learning (matches Plant Card 3.8.1).
  *  v1.0.1: the grow-lights chip lights up from each light's real state (Plant Card 3.7's LinwoodLightState), so an
  *          RF-switched bar whose plug is always on no longer keeps it lit at night.
  *  - One chip per plant tile in linwood-plant-card (tiles carry id="lpc-<i>", Plant Card 3.6+) plus one for the
@@ -183,7 +184,7 @@
           return;
         }
         const t = this._target(key);
-        const due = '.wat.s-due:not(.lrn), .wat.s-overdue, .water.s-due, .water.s-overdue';
+        const due = '.wat.s-due, .wat.s-overdue, .water.s-due, .water.s-overdue';
         const need = !!t && (t.matches('.s-overdue, .s-due, .s-unlogged') || !!t.querySelector(due));
         const late = !!t && (t.matches('.s-overdue') || !!t.querySelector('.wat.s-overdue, .water.s-overdue'));
         chips.forEach((c) => { c.classList.toggle('need', need); c.classList.toggle('late', late); });
