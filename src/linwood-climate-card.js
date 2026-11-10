@@ -1,4 +1,8 @@
-/* Linwood Climate Card v1.18.0 — custom dial thermostat for Home Assistant
+/* Linwood Climate Card v1.19.0 — custom dial thermostat for Home Assistant
+ * v1.19.0: the Target / Mode / Fan / Comfort tiles and the Auto Home/Away / Sleep / Air Mixing / Fresh Air rows now live
+ *         in a collapsible "Controls" section under the dial, collapsed by default. The bar shows how many automations are
+ *         on (and "Fan running" while Air Mixing / Fresh Air is running the blower); tapping it opens or closes the section,
+ *         and each browser remembers the last state. `collapsible_controls: false` brings back the always-open layout.
  * v1.18.0: the "Auto Sleep" row no longer describes bed-triggered Sleep. Sleep now starts from the ecobee schedule or the
  *         Comfort menu, and the row's automation only ends it when you get up: "Sleep · 2 h 10 min", "Home when you get
  *         up", "Off · ecobee schedule". `auto_sleep.bed` is gone (ignored if still set).
@@ -229,6 +233,10 @@ class LinwoodClimateCard extends HTMLElement {
       .map((r, i) => Object.assign({ color: LCC_ROOM_COLORS[i % LCC_ROOM_COLORS.length] }, r));
     this._pending = null;
     this._side = 'low';
+    // Controls section: collapsed unless this browser last left it open (light per-viewer convenience, so every access is guarded)
+    if (this._ctlOpen === undefined) {
+      try { this._ctlOpen = window.localStorage.getItem('linwood-climate-controls:' + config.entity) === '1'; } catch (e) { this._ctlOpen = false; }
+    }
     this._drag = false;
     this._sig = null;
     this._hist = null;
@@ -516,7 +524,7 @@ class LinwoodClimateCard extends HTMLElement {
       const s = this._st(id);
       parts.push(s ? s.state + '|' + s.last_changed + (s.attributes.temperature != null ? '|' + s.attributes.temperature : '') : '-');
     });
-    parts.push(JSON.stringify(this._pending), this._side, this._histVer);
+    parts.push(JSON.stringify(this._pending), this._side, this._histVer, this._ctlOpen);
     if (this._rooms.length) parts.push(Math.floor(Date.now() / 60000));
     return parts.join('§');
   }
@@ -745,6 +753,37 @@ class LinwoodClimateCard extends HTMLElement {
     const aa = this._autoAway(), sl = this._autoSleep(), am = this._autoMix(), ar = this._autoAir();
     const hp = this._st(this._config.heat_alert), heatBad = !!hp && hp.state === 'on';
     const fxClass = `fx-${look.fx}`;
+
+    // tiles + Auto rows; tucked into a collapsible "Controls" section unless `collapsible_controls: false`
+    const controlsInner = `<div class="stats">
+    <button class="stat" data-act="more"><span class="k">TARGET</span><span class="sv">${targetTxt}</span></button>
+    <label class="stat sel"><span class="k">MODE<ha-icon icon="mdi:chevron-down"></ha-icon></span><span class="sv mode">${mm.label}</span>
+      <select class="msel" aria-label="HVAC mode">${opts}</select></label>
+    <button class="stat${fanOn ? ' act' : ''}" data-act="fan" ${fanModes.length ? '' : 'disabled'}><span class="k">FAN<ha-icon icon="mdi:fan${fanOn ? '' : '-off'}"${fanOn ? ' class="spin"' : ''}></ha-icon></span><span class="sv">${fanModes.length ? (fanOn ? 'On' : 'Auto') : '—'}</span></button>
+    ${fourth}
+  </div>
+  ${aa ? this._autoAwayHtml(aa) : ''}
+  ${sl ? this._autoSleepHtml(sl) : ''}
+  ${am ? this._autoMixHtml(am) : ''}
+  ${ar ? this._autoAirHtml(ar) : ''}`;
+    let controls = controlsInner;
+    if (this._config.collapsible_controls !== false) {
+      const open = !!this._ctlOpen;
+      const autos = [aa, sl, am, ar].filter(Boolean);
+      const onCount = autos.filter((r) => r.on).length;
+      const fanRun = [am, ar].some((r) => r && r.on && r.active);
+      const summary = fanRun
+        ? '<ha-icon icon="mdi:fan" class="spin"></ha-icon><span>Fan running</span>'
+        : autos.length ? `<span>${onCount} of ${autos.length} automations on</span>` : '';
+      controls = `<div class="ctlwrap${open ? ' open' : ''}">
+    <button class="ctlbar" data-act="ctl" aria-expanded="${open}" aria-controls="lccctl" aria-label="Controls">
+      <span class="ctlt">CONTROLS</span>
+      <span class="ctls${fanRun ? ' run' : ''}">${summary}</span>
+      <ha-icon class="ctlchev" icon="mdi:chevron-down"></ha-icon>
+    </button>
+    <div class="ctlbody" id="lccctl"><div class="ctlin">${controlsInner}</div></div>
+  </div>`;
+    }
     return `
 <div class="card ${fxClass}" style="--c1:${c[0]};--c2:${c[1]};--c3:${c[2]}">
   <div class="head">
@@ -785,17 +824,7 @@ class LinwoodClimateCard extends HTMLElement {
     <button class="step minus" data-act="step" data-val="-1" aria-label="Lower"><ha-icon icon="mdi:minus"></ha-icon></button>
     <button class="step plus" data-act="step" data-val="1" aria-label="Raise"><ha-icon icon="mdi:plus"></ha-icon></button>`}
   </div>
-  <div class="stats">
-    <button class="stat" data-act="more"><span class="k">TARGET</span><span class="sv">${targetTxt}</span></button>
-    <label class="stat sel"><span class="k">MODE<ha-icon icon="mdi:chevron-down"></ha-icon></span><span class="sv mode">${mm.label}</span>
-      <select class="msel" aria-label="HVAC mode">${opts}</select></label>
-    <button class="stat${fanOn ? ' act' : ''}" data-act="fan" ${fanModes.length ? '' : 'disabled'}><span class="k">FAN<ha-icon icon="mdi:fan${fanOn ? '' : '-off'}"${fanOn ? ' class="spin"' : ''}></ha-icon></span><span class="sv">${fanModes.length ? (fanOn ? 'On' : 'Auto') : '—'}</span></button>
-    ${fourth}
-  </div>
-  ${aa ? this._autoAwayHtml(aa) : ''}
-  ${sl ? this._autoSleepHtml(sl) : ''}
-  ${am ? this._autoMixHtml(am) : ''}
-  ${ar ? this._autoAirHtml(ar) : ''}
+  ${controls}
   ${roomsPanel}
   ${reads.length ? `<div class="reads">${reads.join('')}</div>` : ''}
 </div>`;
@@ -1119,6 +1148,11 @@ class LinwoodClimateCard extends HTMLElement {
         break;
       }
       case 'side': this._side = val; this._render(true); break;
+      case 'ctl':
+        this._ctlOpen = !this._ctlOpen;
+        try { window.localStorage.setItem('linwood-climate-controls:' + this._config.entity, this._ctlOpen ? '1' : '0'); } catch (e) { /* storage unavailable: the section just starts collapsed next time */ }
+        this._render(true);
+        break;
       case 'mode': if (val) this._call('climate', 'set_hvac_mode', { hvac_mode: val }); break;
       case 'fan': {
         const fm = a.fan_modes || []; if (!fm.length) return;
@@ -1289,6 +1323,23 @@ ha-icon { --mdc-icon-size:18px; display:inline-flex; }
 .plus { right:31%; }
 .power { position:absolute; bottom:1%; left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:8px; padding:10px 18px; border-radius:16px; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.1); font-weight:600; white-space:nowrap; }
 .stats { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:10px; margin-top:14px; }
+/* collapsible Controls section (tiles + Auto rows) */
+.ctlwrap { margin-top:14px; }
+.ctlbar { display:flex; align-items:center; gap:10px; width:100%; padding:11px 14px; border-radius:18px; background:rgba(255,255,255,0.045); border:1px solid rgba(255,255,255,0.06); text-align:left; transition:background .15s, border-color .3s; }
+.ctlbar:hover { background:rgba(255,255,255,0.075); }
+.ctlwrap.open .ctlbar { border-color:rgba(255,255,255,0.1); }
+.ctlt { flex:none; font-size:11px; letter-spacing:.12em; font-weight:600; color:#8b919c; }
+.ctls { flex:1; min-width:0; display:flex; align-items:center; justify-content:flex-end; gap:6px; font-size:12px; color:#8b919c; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.ctls.run { color:#5eead4; }
+.ctls ha-icon { --mdc-icon-size:15px; flex:none; }
+.ctls ha-icon.spin { animation:spin 2.4s linear infinite; }
+.ctlchev { flex:none; --mdc-icon-size:20px; color:#9aa0aa; transition:transform .25s; }
+.ctlwrap.open .ctlchev { transform:rotate(180deg); }
+.ctlbody { display:grid; grid-template-rows:0fr; visibility:hidden; transition:grid-template-rows .28s ease, visibility 0s linear .28s; }
+.ctlwrap.open .ctlbody { grid-template-rows:1fr; visibility:visible; transition:grid-template-rows .28s ease, visibility 0s; }
+.ctlin { min-height:0; overflow:hidden; }
+.ctlin > .stats { margin-top:10px; }
+@media (prefers-reduced-motion: reduce) { .ctlbody, .ctlwrap.open .ctlbody, .ctlchev { transition:none; } }
 .stat { position:relative; display:flex; flex-direction:column; align-items:flex-start; padding:12px 14px; border-radius:18px; background:rgba(255,255,255,0.045); border:1px solid rgba(255,255,255,0.06); text-align:left; transition:background .15s, border-color .15s; cursor:pointer; }
 .stat:hover:not(:disabled) { background:rgba(255,255,255,0.075); }
 .stat.sel:focus-within { border-color:color-mix(in srgb, var(--c2) 55%, transparent); }
