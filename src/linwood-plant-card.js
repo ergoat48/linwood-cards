@@ -1,4 +1,6 @@
-/* Linwood Plant Card v4.2.0 — illustrated plant-care tracker for the Plant Care page.
+/* Linwood Plant Card v4.3.0 — illustrated plant-care tracker for the Plant Care page.
+ * v4.3.0: `agenda: false` hides the Due today / week-ahead section. New custom:linwood-plant-pills — Due today, next up
+ *         and season as Home-header-style pills for beside the Plant Care title (tap to jump to the plant).
  * v4.2.0: a Water ring beside the Feed ring under each drawing (days to the next soil check — learned or care-guide —
  *         or to the next water change), and Watering / Fresh water / Feeding share one tracker layout: status line,
  *         one line of detail, a badge (typical days / learning, cycle, dose) and the same buttons — log it now
@@ -480,6 +482,11 @@ const lpcLast = (st) => {
 const lpcSince = (d) => { const a = new Date(d); a.setHours(0, 0, 0, 0); const b = new Date(); b.setHours(0, 0, 0, 0); return Math.round((b - a) / 86400000); };
 const lpcGrowMonths = (cfg) => (Array.isArray(cfg.growing_months) && cfg.growing_months.length ? cfg.growing_months : [3, 4, 5, 6, 7, 8, 9]).map(Number).filter((n) => n >= 1 && n <= 12).sort((a, b) => a - b);
 const lpcSeason = (grow) => (grow.includes(new Date().getMonth() + 1) ? 'growing' : 'rest');
+const lpcRange = (g, season) => {
+  if (!g.length) return '';
+  const first = g[0], last = g[g.length - 1];
+  return season === 'growing' ? `${LPC_MON[first - 1]}–${LPC_MON[last - 1]}` : `${LPC_MON[last % 12]}–${LPC_MON[(first + 10) % 12]}`;
+};
 const lpcLitNames = (cfg) => (cfg.lit_locations || ['Mantel']).map((s) => String(s).toLowerCase());
 
 /* ---------- grow lights ---------- */
@@ -718,6 +725,31 @@ const lpcHum = (hass, h) => {
   return { status, hum: isFinite(hum) ? Math.round(hum) : null };
 };
 
+/* everything due today and over the next six days: feeding, soil checks, water changes (agenda + header pills) */
+const lpcEvents = (models) => {
+  const out = [];
+  const add = (m, day, kind, txt, st) => out.push({ m, day, kind, txt, st, c: LPC_STATUS[st] || '#9aa0aa' });
+  models.forEach((m) => {
+    if (lpcNeeds(m.status)) add(m, 0, 'feed', m.status === 'overdue' ? `Feed · ${-m.left} d late` : 'Feed', m.status);
+    else if (m.status === 'unlogged') add(m, 0, 'feed', 'Log a feeding', 'unlogged');
+    else if ((m.status === 'soon' || m.status === 'ok') && m.left > 0 && m.left <= 6) add(m, m.left, 'feed', 'Feed', m.status);
+    const w = m.water;
+    if (w) {
+      if (lpcNeeds(w.status)) add(m, 0, 'water', w.status === 'overdue' ? `Fresh water · ${-w.left} d late` : 'Fresh water', w.status);
+      else if (w.status === 'unlogged') add(m, 0, 'water', 'Log a water change', 'unlogged');
+      else if ((w.status === 'soon' || w.status === 'ok') && w.left > 0 && w.left <= 6) add(m, w.left, 'water', 'Fresh water', w.status);
+    }
+    const s = m.wat;
+    if (s) {
+      if (s.need) add(m, 0, 'soil', s.status === 'overdue' ? 'Probably dry' : 'Check soil', s.status);
+      else if (s.status === 'ok' && s.left != null && s.left > 0 && s.left <= 6) add(m, s.left, 'soil', 'Check soil', 'ok');
+      else if (s.status === 'checked' && s.recheckOn) { const d = lpcGap(s.today, lpcKey(s.recheckOn)); if (d > 0 && d <= 6) add(m, d, 'soil', 'Recheck soil', 'checked'); }
+    }
+  });
+  const order = { soil: 0, water: 1, feed: 2 };
+  return out.sort((a, b) => a.day - b.day || (lpcNeeds(b.st) - lpcNeeds(a.st)) || order[a.kind] - order[b.kind] || a.m.i - b.m.i);
+};
+
 /* Shared with the jump bar (and anything else that needs it): is this grow light actually lit? RF lights are judged by
  * their draw, not their always-on plug. Takes one entry of a grow-lights `lights:` list. */
 window.LinwoodLightState = lpcAnyState;
@@ -818,7 +850,7 @@ class LinwoodPlantCard extends HTMLElement {
     window.__lpcConfig = config;
     try {
       localStorage.setItem(LPC_STORE, JSON.stringify({
-        plants: config.plants.map((p) => ({ entity: p.entity, location: p.location, every: p.every, water: p.water, watering: p.watering, lit: p.lit, light: p.light, moved: p.moved })),
+        plants: config.plants.map((p) => ({ entity: p.entity, name: p.name, color: p.color, location: p.location, every: p.every, water: p.water, watering: p.watering, lit: p.lit, light: p.light, moved: p.moved })),
         growing_months: config.growing_months, lit_locations: config.lit_locations, grow_light: config.grow_light, grow_lights: config.grow_lights, settle_days: config.settle_days, water_learning: config.water_learning,
       }));
     } catch (e) { /* private mode */ }
@@ -977,11 +1009,7 @@ class LinwoodPlantCard extends HTMLElement {
   _ago(since, last) { return since <= 0 ? 'today' : since === 1 ? 'yesterday' : since < 14 ? `${since} d ago` : this._date(last); }
   _rel(since) { return since <= 0 ? 'today' : since === 1 ? 'yesterday' : `${since} d ago`; }
   _typ(n) { return n == null ? '—' : Number.isInteger(n) ? String(n) : `${Math.floor(n)}½`; }
-  _range(season) {
-    const g = this._grow; if (!g.length) return '';
-    const first = g[0], last = g[g.length - 1];
-    return season === 'growing' ? `${LPC_MON[first - 1]}–${LPC_MON[last - 1]}` : `${LPC_MON[last % 12]}–${LPC_MON[(first + 10) % 12]}`;
-  }
+  _range(season) { return lpcRange(this._grow, season); }
   _nextGrowMonth() { return LPC_MON[this._grow[0] - 1] || 'spring'; }
   _status(m, season) {
     switch (m.status) {
@@ -1275,29 +1303,7 @@ class LinwoodPlantCard extends HTMLElement {
   }
 
   /* ---------- agenda: everything that comes due today and over the next six days (feeding, soil checks, water changes) ---------- */
-  _events(models) {
-    const out = [];
-    const add = (m, day, kind, txt, st) => out.push({ m, day, kind, txt, st, c: LPC_STATUS[st] || '#9aa0aa' });
-    models.forEach((m) => {
-      if (lpcNeeds(m.status)) add(m, 0, 'feed', m.status === 'overdue' ? `Feed · ${-m.left} d late` : 'Feed', m.status);
-      else if (m.status === 'unlogged') add(m, 0, 'feed', 'Log a feeding', 'unlogged');
-      else if ((m.status === 'soon' || m.status === 'ok') && m.left > 0 && m.left <= 6) add(m, m.left, 'feed', 'Feed', m.status);
-      const w = m.water;
-      if (w) {
-        if (lpcNeeds(w.status)) add(m, 0, 'water', w.status === 'overdue' ? `Fresh water · ${-w.left} d late` : 'Fresh water', w.status);
-        else if (w.status === 'unlogged') add(m, 0, 'water', 'Log a water change', 'unlogged');
-        else if ((w.status === 'soon' || w.status === 'ok') && w.left > 0 && w.left <= 6) add(m, w.left, 'water', 'Fresh water', w.status);
-      }
-      const s = m.wat;
-      if (s) {
-        if (s.need) add(m, 0, 'soil', s.status === 'overdue' ? 'Probably dry' : 'Check soil', s.status);
-        else if (s.status === 'ok' && s.left != null && s.left > 0 && s.left <= 6) add(m, s.left, 'soil', 'Check soil', 'ok');
-        else if (s.status === 'checked' && s.recheckOn) { const d = lpcGap(s.today, lpcKey(s.recheckOn)); if (d > 0 && d <= 6) add(m, d, 'soil', 'Recheck soil', 'checked'); }
-      }
-    });
-    const order = { soil: 0, water: 1, feed: 2 };
-    return out.sort((a, b) => a.day - b.day || (lpcNeeds(b.st) - lpcNeeds(a.st)) || order[a.kind] - order[b.kind] || a.m.i - b.m.i);
-  }
+  _events(models) { return lpcEvents(models); }
 
   _agenda(events, dueN, season) {
     const esc = this._esc.bind(this);
@@ -1487,7 +1493,7 @@ class LinwoodPlantCard extends HTMLElement {
     const u = this._undo;
     LwMorph.patch(this._root, `${this._css()}
 <div class="card">
-  ${this._agenda(events, dueN, season)}
+  ${cfg.agenda === false ? '' : this._agenda(events, dueN, season)}
   ${panel}
   ${this._nav(models, dueIdx)}
   <div class="rail">${models.map((m) => this._tile(m, m.i, season)).join('')}</div>
@@ -2455,11 +2461,116 @@ ha-icon { --mdc-icon-size:18px; display:inline-flex; flex:none; }
   }
 }
 
+/* =========================================================================================
+ * PLANT STATUS PILLS — sits beside the Plant Care title, styled like the Home header's pills (52 px, dot or icon +
+ * label). Due today (green dot when clear, amber / red when something's due), the next thing coming up this week, and
+ * the season. Tapping Due today or Next jumps the plant card's carousel to that plant. Reads the plant card's config
+ * (shared through window.__lpcConfig, or the copy it keeps in localStorage), so it needs no settings of its own.
+ *   type: custom:linwood-plant-pills
+ * =======================================================================================*/
+const lpcDeepFind = (start, tag, maxDepth = 9) => {
+  let level = [start];
+  for (let d = 0; d <= maxDepth && level.length; d++) {
+    const next = [];
+    for (const n of level) {
+      for (const k of (n.children ? Array.from(n.children) : [])) {
+        if (k.localName === tag) return k;
+        next.push(k);
+        if (k.shadowRoot) next.push(k.shadowRoot);
+      }
+    }
+    level = next;
+  }
+  return null;
+};
+class LinwoodPlantPills extends HTMLElement {
+  setConfig(config) { this._cfg = config || {}; this._sig = ''; if (!this.shadowRoot) { this.attachShadow({ mode: 'open' }); this.shadowRoot.addEventListener('click', (ev) => this._click(ev)); } this._paint(); }
+  set hass(hass) {
+    this._hass = hass;
+    const cfg = this._plantCfg();
+    if (!cfg) return;
+    const ids = cfg.plants.flatMap((p) => [p.entity, p.location, p.water && p.water.entity, p.moved, p.watering && p.watering.log, p.watering && p.watering.checked]).filter(Boolean);
+    const sig = ids.map((e) => { const s = hass.states[e]; return s ? s.state : '-'; }).join('|') + new Date().toDateString() + (cfg === window.__lpcConfig ? 'c' : 's');
+    if (sig !== this._sig) { this._sig = sig; this._paint(); }
+  }
+  connectedCallback() { clearInterval(this._tm); this._tm = setInterval(() => { this._sig = ''; if (this._hass) this.hass = this._hass; }, 600000); }
+  disconnectedCallback() { clearInterval(this._tm); }
+  getCardSize() { return 1; }
+  _plantCfg() {
+    let cfg = window.__lpcConfig;
+    if (!cfg) { try { cfg = JSON.parse(localStorage.getItem(LPC_STORE) || 'null'); } catch (e) { cfg = null; } }
+    return cfg && Array.isArray(cfg.plants) ? cfg : null;
+  }
+  _click(ev) {
+    const el = ev.composedPath().find((x) => x.dataset && x.dataset.jump);
+    if (!el) return;
+    let node = this, pc = null;
+    for (let i = 0; i < 6 && node && !pc; i++) { const root = node.getRootNode(); pc = lpcDeepFind(root, 'linwood-plant-card'); node = root.host; }
+    if (pc && typeof pc._jump === 'function') pc._jump(el.dataset.jump);
+  }
+  _paint() {
+    if (!this.shadowRoot) return;
+    const cfg = this._plantCfg(), h = this._hass, esc = lpcEsc;
+    if (!cfg || !h) { LwMorph.patch(this.shadowRoot, `${this._css()}<div class="row"></div>`); return; }
+    const grow = lpcGrowMonths(cfg), season = lpcSeason(grow);
+    const models = cfg.plants.map((p, i) => ({ ...lpcModel(h, cfg, p, season), i }));
+    const ev = lpcEvents(models);
+    const today = ev.filter((e) => e.day === 0), later = ev.filter((e) => e.day > 0);
+    const due = today.filter((e) => lpcNeeds(e.st));
+    const late = due.some((e) => e.st === 'overdue');
+    const dot = late ? '#f87171' : due.length ? '#f5b83d' : today.length ? '#9aa0aa' : '#22c55e';
+    const what = (e) => `${e.m.p.name || 'Plant'} · ${e.txt.toLowerCase()}`;
+    const dueTxt = !today.length ? 'Nothing due today' : today.length <= 2 ? today.map(what).join(', ') : `${due.length || today.length} due today`;
+    const dueTip = today.length ? today.map(what).join('\n') : 'All caught up';
+    const KI = { feed: ['mdi:bottle-tonic-plus-outline', '#4ade80'], soil: ['mdi:watering-can-outline', '#38bdf8'], water: ['mdi:water-sync', '#38bdf8'] };
+    const n = later[0];
+    let next = '';
+    if (n) {
+      const sameDay = later.filter((e) => e.day === n.day);
+      const dt = new Date(); dt.setHours(12, 0, 0, 0); dt.setDate(dt.getDate() + n.day);
+      const when = n.day === 1 ? 'Tomorrow' : dt.toLocaleDateString(undefined, { weekday: 'short' });
+      const ki = KI[n.kind];
+      const week = later.map((e) => { const d = new Date(); d.setDate(d.getDate() + e.day); return `${e.day === 1 ? 'Tomorrow' : d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}: ${what(e)}`; }).join('\n');
+      next = `<button class="pill" data-jump="lpc-${n.m.i}" title="${esc(`Coming up\n${week}`)}"><ha-icon icon="${ki[0]}" style="color:${ki[1]}"></ha-icon><b>${esc(n.m.p.name || 'Plant')}</b><span>${esc(n.txt.toLowerCase())} · ${esc(when)}${sameDay.length > 1 ? ` · +${sameDay.length - 1}` : ''}</span></button>`;
+    } else next = `<div class="pill"><ha-icon icon="mdi:calendar-check-outline" style="color:#9aa0aa"></ha-icon><span>Nothing else this week</span></div>`;
+    const sn = season === 'growing' ? ['mdi:white-balance-sunny', '#4ade80', 'Growing season'] : ['mdi:weather-night', '#94a3b8', 'Resting season'];
+    const snTip = season === 'growing' ? 'Everything on its full feeding schedule' : 'Window plants slow down · grow-light plants keep feeding';
+    LwMorph.patch(this.shadowRoot, `${this._css()}
+<div class="row">
+  <button class="pill" ${today.length ? `data-jump="lpc-${today[0].m.i}"` : ''} title="${esc(dueTip)}"><i style="background:${dot};box-shadow:0 0 10px ${dot}"></i><b>${esc(dueTxt)}</b></button>
+  ${next}
+  <div class="pill" title="${esc(snTip)}"><ha-icon icon="${sn[0]}" style="color:${sn[1]}"></ha-icon><b>${sn[2]}</b><span>${esc(lpcRange(grow, season))}</span></div>
+</div>`);
+  }
+  _css() {
+    return `<style>
+:host { display:block; }
+.row { display:flex; flex-wrap:wrap; justify-content:flex-end; align-items:center; gap:12px; font-family:var(--ha-font-family-body, Roboto, sans-serif); color:#f3f4f6; }
+.pill { display:flex; align-items:center; gap:10px; height:52px; padding:0 18px; border-radius:18px; background:rgba(255,255,255,0.045); border:1px solid rgba(255,255,255,0.07); white-space:nowrap; font:inherit; color:inherit; cursor:default; -webkit-tap-highlight-color:transparent; touch-action:manipulation; }
+button.pill[data-jump] { cursor:pointer; transition:background .15s; }
+button.pill[data-jump]:hover { background:rgba(255,255,255,0.08); }
+.pill ha-icon { --mdc-icon-size:24px; display:inline-flex; }
+.pill i { width:10px; height:10px; border-radius:50%; flex:none; }
+.pill b { font-size:15px; font-weight:600; }
+.pill span { font-size:15px; color:#9aa0aa; }
+@media (max-width: 700px) {
+  .row { justify-content:flex-start; flex-wrap:nowrap; overflow-x:auto; scrollbar-width:none; gap:8px; margin:0 -12px; padding:0 12px; }
+  .row::-webkit-scrollbar { display:none; }
+  .pill { flex:none; height:44px; padding:0 14px; border-radius:15px; gap:8px; }
+  .pill ha-icon { --mdc-icon-size:20px; }
+  .pill b, .pill span { font-size:14px; }
+}
+</style>`;
+  }
+}
+
 LinwoodPlantCard.lpcArt = 2;      // drawings v2 built in (the separate Linwood Plant Art add-on stands down)
 LinwoodPlantCard.lpcSafe = 1;     // popup safe-area spacing built in (the separate Safe Area add-on stands down)
 if (!customElements.get('linwood-plant-card')) customElements.define('linwood-plant-card', LinwoodPlantCard);
 if (!customElements.get('linwood-grow-lights-card')) customElements.define('linwood-grow-lights-card', LinwoodGrowLightsCard);
+if (!customElements.get('linwood-plant-pills')) customElements.define('linwood-plant-pills', LinwoodPlantPills);
 window.customCards = window.customCards || [];
 if (!window.customCards.find((c) => c.type === 'linwood-plant-card')) window.customCards.push({ type: 'linwood-plant-card', name: 'Linwood Plant Card', description: 'Illustrated plant-care tracker: feeding schedules, a learning watering log, water changes, locations, grow lights and a care guide', preview: false });
+if (!window.customCards.find((c) => c.type === 'linwood-plant-pills')) window.customCards.push({ type: 'linwood-plant-pills', name: 'Linwood Plant Pills', description: 'Due today, next up and season pills for the Plant Care header', preview: false });
 if (!window.customCards.find((c) => c.type === 'linwood-grow-lights-card')) window.customCards.push({ type: 'linwood-grow-lights-card', name: 'Linwood Grow Lights Card', description: 'Every grow light in one panel: schedule, toggles, wattage and brightness', preview: false });
 })();

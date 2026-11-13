@@ -6,7 +6,7 @@ GlobalRegistrator.register({ url: 'http://localhost:8123/' });
 
 const expected = [
   'linwood-light-card', 'linwood-switch-card', 'linwood-garage-card', 'linwood-appletv-card', 'linwood-theater-card',
-  'linwood-tv-card', 'linwood-climate-card', 'linwood-security-card', 'linwood-weather-card', 'linwood-calendar-card', 'linwood-plant-card', 'linwood-grow-lights-card',
+  'linwood-tv-card', 'linwood-climate-card', 'linwood-security-card', 'linwood-weather-card', 'linwood-calendar-card', 'linwood-plant-card', 'linwood-grow-lights-card', 'linwood-plant-pills',
   'linwood-presence-card',
 ];
 
@@ -42,6 +42,7 @@ const configs = {
   'linwood-theater-card': { receiver: 'media_player.x' },
   'linwood-tv-card': { soundbar: 'media_player.x' },
   'linwood-appletv-card': { entity: 'media_player.x' },
+  'linwood-plant-pills': {},
   'linwood-light-card': { entity: 'light.x' },
   'linwood-presence-card': { sensors: [{ id: 'abc123', x: 0, y: 0 }], room: { walls: [[0, 0], [1000, 0], [1000, 1000], [0, 1000]] } },
 };
