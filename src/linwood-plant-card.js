@@ -1,4 +1,9 @@
-/* Linwood Plant Card v4.1.0 — illustrated plant-care tracker for the Plant Care page.
+/* Linwood Plant Card v4.2.0 — illustrated plant-care tracker for the Plant Care page.
+ * v4.2.0: a Water ring beside the Feed ring under each drawing (days to the next soil check — learned or care-guide —
+ *         or to the next water change), and Watering / Fresh water / Feeding share one tracker layout: status line,
+ *         one line of detail, a badge (typical days / learning, cycle, dose) and the same buttons — log it now
+ *         (+ Still moist when a soil check is due), Yesterday, pick a date. The Last fed / Next feed / Dose boxes
+ *         fold into the Feeding tracker. Watering gains Yesterday; fresh water gains Yesterday and a date picker.
  * v4.1.0: back to the 3.x sizes (250 px drawings, 46 px buttons, roomier tiles — ~3 across on a desktop, 2 on a
  *         tablet, one on a phone) with the 4.0 layout; the agenda and grow-lights panel are scaled to match.
  * v4.0.1: tiles keep their natural height in the carousel; shorter "d ago" wording.
@@ -884,6 +889,7 @@ class LinwoodPlantCard extends HTMLElement {
     else if (act === 'water') this._log(val, 'water change');
     else if (act === 'watered') this._wLog(val, lpcKey(new Date()), 'add');
     else if (act === 'moist') this._moist(val);
+    else if (act === 'wyesterday') { const d = new Date(); d.setDate(d.getDate() - 1); this._wLog(val, lpcKey(d), 'add'); }
     else if (act === 'wclear') this._wLog(val, el.dataset.day, 'remove');
     else if (act === 'undo') this._doUndo();
     else if (act === 'yesterday') { const d = new Date(); d.setDate(d.getDate() - 1); this._setDate(val, this._key(d)); }
@@ -969,6 +975,7 @@ class LinwoodPlantCard extends HTMLElement {
   _span(d) { return d >= 14 && d % 7 === 0 ? `${d / 7} wk` : `${d} d`; }
   _date(d) { return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); }
   _ago(since, last) { return since <= 0 ? 'today' : since === 1 ? 'yesterday' : since < 14 ? `${since} d ago` : this._date(last); }
+  _rel(since) { return since <= 0 ? 'today' : since === 1 ? 'yesterday' : `${since} d ago`; }
   _typ(n) { return n == null ? '—' : Number.isInteger(n) ? String(n) : `${Math.floor(n)}½`; }
   _range(season) {
     const g = this._grow; if (!g.length) return '';
@@ -1010,8 +1017,14 @@ class LinwoodPlantCard extends HTMLElement {
       : `<ha-icon class="fallback" icon="${this._esc(m.p.icon || 'mdi:sprout')}"></ha-icon>`;
   }
 
-  _ring(m) {
+  /* one countdown ring: days left in the middle, a short word under the number, a caption under the ring */
+  _ringEl(o) {
     const R = 24, C = 2 * Math.PI * R;
+    return `<div class="rg k-${o.kind}" title="${this._esc(o.tip)}"><div class="ring" style="--sc:${o.sc}"><svg viewBox="0 0 60 60"><circle cx="30" cy="30" r="${R}" class="rt"/><circle cx="30" cy="30" r="${R}" class="rf" stroke-dasharray="${f1(C * Math.min(1, Math.max(0, o.pct)))} ${f1(C)}" transform="rotate(-90 30 30)"/></svg><div class="rc"><b>${o.big}</b><i>${o.small}</i></div></div><span class="rgl"><ha-icon icon="${o.icon}"></ha-icon>${o.label}</span></div>`;
+  }
+  _days(n) { return n >= 100 ? '99+' : String(n); }
+  /* feeding countdown */
+  _ring(m) {
     const pct = m.status === 'overdue' || m.status === 'due' ? 1 : m.pct;
     let big, small;
     if (m.status === 'settle') { big = String(m.settle.left); small = 'settle'; }
@@ -1020,9 +1033,38 @@ class LinwoodPlantCard extends HTMLElement {
     else if (m.status === 'unlogged' || m.status === 'missing') { big = '?'; small = 'log it'; }
     else if (m.left < 0) { big = `+${-m.left}`; small = 'late'; }
     else if (m.left === 0) { big = '0'; small = 'today'; }
-    else { big = m.left >= 100 ? '99+' : String(m.left); small = m.left === 1 ? 'day' : 'days'; }
-    const tip = m.status === 'settle' ? `Settling in after the move — first feed ${this._date(m.settle.until)}` : m.iv ? `Every ${this._span(m.iv)}` : (m.p.hold || 'No feeding this season');
-    return `<div class="ring" title="${this._esc(tip)}"><svg viewBox="0 0 60 60"><circle cx="30" cy="30" r="${R}" class="rt"/><circle cx="30" cy="30" r="${R}" class="rf" stroke-dasharray="${f1(C * pct)} ${f1(C)}" transform="rotate(-90 30 30)"/></svg><div class="rc"><b>${big}</b><i>${small}</i></div></div>`;
+    else { big = this._days(m.left); small = m.left === 1 ? 'day' : 'days'; }
+    const tip = m.status === 'settle' ? `Settling in after the move — first feed ${this._date(m.settle.until)}` : m.iv ? `Feeding every ${this._span(m.iv)}` : (m.p.hold || 'No feeding this season');
+    return this._ringEl({ kind: 'feed', label: 'Feed', icon: 'mdi:bottle-tonic-plus-outline', pct, big, small, tip, sc: LPC_STATUS[m.status] });
+  }
+  /* watering countdown: days until the soil check (soil plants) or the next water change (water-kept plants) */
+  _wRing(m) {
+    const BLUE = '#38bdf8';
+    const w = m.wat;
+    if (w) {
+      let big, small, pct, sc = w.status === 'ok' ? BLUE : LPC_STATUS[w.status] || '#9aa0aa', tip;
+      if (w.status === 'missing' || w.status === 'unlogged') { big = '?'; small = 'log it'; pct = 0; tip = 'Log a watering to start the countdown'; }
+      else if (w.status === 'checked') {
+        const d = w.recheckOn ? Math.max(0, lpcGap(w.today, lpcKey(w.recheckOn))) : 0;
+        big = this._days(d); small = 'recheck'; pct = 1 - d / Math.max(1, w.S.recheck); tip = `Still moist — check the soil again ${this._date(w.recheckOn)}`;
+      } else if (w.status === 'ok') {
+        const left = w.left == null ? 0 : w.left;
+        big = this._days(left); small = left === 1 ? 'day' : 'days'; pct = w.checkDay ? w.since / w.checkDay : 0;
+        tip = `Check the soil on day ${w.checkDay}${w.learning ? ' (care guide, still learning)' : ` (usually dry in ~${this._typ(w.learned)} d)`}`;
+      } else {
+        const late = w.checkDay != null ? w.since - w.checkDay : 0;
+        big = late > 0 ? `+${late}` : '0'; small = late > 0 ? 'late' : 'today'; pct = 1; tip = w.status === 'overdue' ? 'Probably dry — water it' : 'Check the soil today';
+      }
+      return this._ringEl({ kind: 'water', label: 'Water', icon: 'mdi:watering-can-outline', pct, big, small, tip, sc });
+    }
+    const x = m.water;
+    if (!x) return '';
+    let big, small;
+    if (x.status === 'missing' || x.status === 'unlogged') { big = '?'; small = 'log it'; }
+    else if (x.left < 0) { big = `+${-x.left}`; small = 'late'; }
+    else if (x.left === 0) { big = '0'; small = 'today'; }
+    else { big = this._days(x.left); small = x.left === 1 ? 'day' : 'days'; }
+    return this._ringEl({ kind: 'water', label: 'Water', icon: 'mdi:water-sync', pct: lpcNeeds(x.status) ? 1 : x.pct, big, small, tip: `Fresh water every ${this._span(x.iv)}`, sc: x.status === 'ok' || x.status === 'soon' ? BLUE : LPC_STATUS[x.status] || '#9aa0aa' });
   }
 
   _locSeg(m) {
@@ -1066,55 +1108,87 @@ class LinwoodPlantCard extends HTMLElement {
     return `<button class="hum h-${s.status}" data-act="hum" data-val="${this._esc(m.p.entity)}" aria-haspopup="dialog"><span class="hui"><ha-icon icon="${s.status === 'run' ? 'mdi:air-humidifier' : 'mdi:air-humidifier-off'}"></ha-icon></span><span class="hut"><b>Humidifier · <em>${word}</em></b><i>${this._esc(sub)}</i></span><span class="hux"><ha-icon icon="mdi:chart-line"></ha-icon></span></button>`;
   }
 
-  _water(w) {
-    const busy = this._busy[w.entity];
-    const meta = w.last ? `changed ${this._ago(w.since, w.last)}` : `every ${this._span(w.iv)}`;
-    return `<div class="water s-${w.status}" style="--sc:${LPC_STATUS[w.status]}">
-  <span class="wi"><ha-icon icon="mdi:water-sync"></ha-icon></span>
-  <span class="wt"><b>Fresh water · <em>${this._esc(this._wStatus(w))}</em></b><i>${this._esc(meta)} · every ${this._span(w.iv)}</i><span class="wbar"><span style="width:${Math.round(w.pct * 100)}%"></span></span></span>
-  <button class="btn wbtn${lpcNeeds(w.status) || w.status === 'unlogged' ? ' go' : ''}" data-act="water" data-val="${this._esc(w.entity)}" ${busy || w.status === 'missing' ? 'disabled' : ''}>${busy ? '<ha-icon class="spin" icon="mdi:loading"></ha-icon>' : '<ha-icon icon="mdi:check"></ha-icon>Changed'}</button>
-</div>`;
+  /* ---------- trackers: Watering / Fresh water / Feeding share one layout ----------
+   * header (icon · name · status, one line of detail, a badge on the right), then the same row of actions:
+   * [log it now] (+ Still moist when a soil check is due) [Yesterday] [pick a date] */
+  _track(o) {
+    const esc = this._esc.bind(this);
+    const pick = `<label class="btn sec pick" title="${esc(o.pickTitle)}"><ha-icon icon="mdi:calendar-edit"></ha-icon><input type="date" data-act="${o.pickAct}" data-val="${esc(o.val2 || o.val)}" max="${lpcKey(new Date())}" value="${esc(o.pickValue || '')}" aria-label="${esc(o.pickTitle)}" ${o.missing ? 'disabled' : ''}></label>`;
+    return `<section class="trk k-${o.kind} s-${o.st}${o.lrn ? ' lrn' : ''}" style="--sc:${o.sc}">
+  <div class="th">
+    <span class="ti"><ha-icon icon="${o.icon}"></ha-icon></span>
+    <span class="tt"><b>${esc(o.label)} · <em>${esc(o.head)}</em></b><i>${esc(o.meta)}</i></span>
+    ${o.badge ? `<span class="tb${o.lrn ? ' lrn' : ''}"><b>${esc(o.badge[0])}</b><i>${esc(o.badge[1])}</i></span>` : ''}
+  </div>
+  <div class="ta">
+    <button class="btn tgo${o.urgent ? ' go' : ''}" data-act="${o.act}" data-val="${esc(o.val)}" ${o.busy || o.missing || o.doneToday ? 'disabled' : ''}>${o.busy ? '<ha-icon class="spin" icon="mdi:loading"></ha-icon>' : `<ha-icon icon="${o.doneToday ? 'mdi:check' : o.goIcon}"></ha-icon>${esc(o.doneToday ? o.doneLabel : o.goLabel)}`}</button>
+    ${o.moist || ''}
+    <button class="btn sec" data-act="${o.yAct}" data-val="${esc(o.val2 || o.val)}" ${o.missing || o.busy ? 'disabled' : ''} title="${esc(o.yTitle)}">Yesterday</button>
+    ${pick}
+  </div>
+</section>`;
   }
-
-  /* soil plants: when it was last watered, when to check the soil next (learned from this pot's own gaps once
-   * there are enough, the care guide's cadence until then), Watered / Still moist / another date, recent gaps */
+  /* soil plants: learned (or care-guide) soil-check rhythm */
   _wat(m) {
-    const w = m.wat, p = m.p, ent = this._esc(p.entity), S = w.S;
+    const w = m.wat, p = m.p, S = w.S;
     const busy = this._busy[`w:${p.entity}`], need = S.learn + 1, n = w.dates.length;
-    const typ = this._typ(w.learned), ago = w.last ? this._ago(w.since, lpcDayOf(w.last)) : '';
+    const typ = this._typ(w.learned), ago = w.last ? this._rel(w.since) : '';
     let head, meta;
     if (w.status === 'missing') { head = 'Helper missing'; meta = `${w.w.log} isn’t in Home Assistant`; }
-    else if (w.status === 'unlogged') { head = 'Log the first watering'; meta = 'Water when the soil is dry, then tap Watered — it learns how long this pot takes to dry out.'; }
-    else if (w.status === 'checked') { head = `Still moist · recheck ${this._date(w.recheckOn)}`; meta = `Checked ${this._ago(lpcGap(w.ckKey, w.today), lpcDayOf(w.ckKey))} · watered ${ago}`; }
+    else if (w.status === 'unlogged') { head = 'Log the first watering'; meta = 'Water when the soil is dry, then log it — it learns how long this pot takes to dry out'; }
+    else if (w.status === 'checked') { head = `Still moist · recheck ${this._date(w.recheckOn)}`; meta = `Checked ${this._rel(lpcGap(w.ckKey, w.today))} · watered ${this._date(lpcDayOf(w.last))} (${ago})`; }
     else if (w.status === 'ok') {
-      head = w.left == null ? `Watered ${ago}` : w.left === 1 ? 'Check the soil tomorrow' : `Check the soil in ${w.left} d`;
-      meta = w.learning
-        ? `Watered ${ago}`
-        : `Watered ${ago} · usually dry in about ${typ} d`;
+      head = w.left == null ? `Watered ${ago}` : w.left === 1 ? 'Check soil tomorrow' : `Check soil in ${w.left} d`;
+      meta = `Watered ${this._date(lpcDayOf(w.last))} (${ago}) · check ${this._date(new Date(lpcDayOf(w.last).getTime() + w.checkDay * 86400000))}`;
     } else {
-      head = w.status === 'overdue' ? 'Probably dry' : 'Check the soil today';
-      meta = w.learning
-        ? `Day ${w.since} · guide: check about every ${w.guide} d`
-        : `Day ${w.since} · usually dry by day ${typ}`;
+      head = w.status === 'overdue' ? 'Probably dry' : 'Check soil today';
+      meta = `Watered ${this._date(lpcDayOf(w.last))} (${ago}) · ${w.learning ? `guide: every ~${w.guide} d` : `usually dry by day ${typ}`}`;
     }
-    const tick = w.typical && w.checkDay && w.checkDay < w.typical ? `<i style="left:${f1((w.checkDay / w.typical) * 100)}%"></i>` : '';
-    const badge = w.status === 'missing' || w.status === 'unlogged' ? ''
-      : w.learning ? `<span class="wtyp lrn"><b>${Math.min(n, need)}/${need}</b><i>learning</i></span>`
-      : `<span class="wtyp"><b>~${typ} d</b><i>typical</i></span>`;
-    const today = w.last && w.last === w.today, due = lpcNeeds(w.status);
+    const due = lpcNeeds(w.status), missing = w.status === 'missing', today = !!w.last && w.last === w.today;
+    const ent = this._esc(p.entity);
+    return this._track({
+      kind: 'water', st: w.status, sc: LPC_STATUS[w.status] || '#9aa0aa', lrn: w.learning && w.status !== 'unlogged' && !missing,
+      icon: due ? 'mdi:watering-can' : 'mdi:watering-can-outline', label: 'Watering', head, meta,
+      badge: missing || w.status === 'unlogged' ? null : w.learning ? [`${Math.min(n, need)}/${need}`, 'learning'] : [`~${typ} d`, 'typical'],
+      act: 'watered', val: p.entity, goIcon: 'mdi:water-plus-outline', goLabel: 'Watered', doneLabel: 'Watered today', doneToday: today,
+      urgent: due || w.status === 'unlogged', busy, missing,
+      moist: due && w.w.checked ? `<button class="btn sec moist" data-act="moist" data-val="${ent}" title="The soil isn’t dry yet — check again in ${S.recheck} days"><ha-icon icon="mdi:hand-water"></ha-icon>Still moist</button>` : '',
+      yAct: 'wyesterday', yTitle: 'Log a watering yesterday', pickAct: 'wpick', pickValue: '', pickTitle: `Log a watering of ${p.name} on another date`,
+    });
+  }
+  /* water-kept plants: fresh water on a fixed cycle */
+  _water(m) {
+    const w = m.water, p = m.p;
     const missing = w.status === 'missing';
-    return `<div class="wat s-${w.status}${w.learning ? ' lrn' : ''}" style="--sc:${LPC_STATUS[w.status] || '#9aa0aa'}">
-  <div class="wh">
-    <span class="wi"><ha-icon icon="${due ? 'mdi:watering-can' : 'mdi:watering-can-outline'}"></ha-icon></span>
-    <span class="wt"><b><em>${this._esc(head)}</em></b><i>${this._esc(meta)}</i>${w.last ? `<span class="wbar"><span style="width:${Math.round(w.pct * 100)}%"></span>${tick}</span>` : ''}</span>
-    ${badge}
-  </div>
-  <div class="wacts">
-    <button class="btn wbtn wgo${due || w.status === 'unlogged' ? ' go' : ''}" data-act="watered" data-val="${ent}" ${busy || missing || today ? 'disabled' : ''}>${busy ? '<ha-icon class="spin" icon="mdi:loading"></ha-icon>' : `<ha-icon icon="mdi:water-plus-outline"></ha-icon>${today ? 'Watered today' : 'Watered'}`}</button>
-    ${due && w.w.checked ? `<button class="btn wbtn sec" data-act="moist" data-val="${ent}" title="The soil isn't dry yet — check again in ${S.recheck} days"><ha-icon icon="mdi:hand-water"></ha-icon>Moist</button>` : ''}
-    <label class="btn wbtn sec pick" title="Log a watering on another date"><ha-icon icon="mdi:calendar-plus"></ha-icon><input type="date" data-act="wpick" data-val="${ent}" max="${w.today || lpcKey(new Date())}" value="" aria-label="Log a watering of ${this._esc(p.name)} on another date" ${missing ? 'disabled' : ''}></label>
-  </div>
-</div>`;
+    const head = this._wStatus(w);
+    const meta = missing ? `${w.entity} isn’t in Home Assistant` : w.last ? `Changed ${this._date(w.last)} (${this._rel(w.since)}) · next ${this._date(new Date(w.last.getTime() + w.iv * 86400000))}` : 'Not logged yet';
+    return this._track({
+      kind: 'water', st: w.status, sc: LPC_STATUS[w.status] || '#9aa0aa',
+      icon: 'mdi:water-sync', label: 'Fresh water', head: head.charAt(0).toUpperCase() + head.slice(1), meta,
+      badge: [this._span(w.iv), 'cycle'],
+      act: 'water', val: w.entity, goIcon: 'mdi:water-sync', goLabel: 'Changed', doneLabel: 'Changed today', doneToday: w.since === 0,
+      urgent: lpcNeeds(w.status) || w.status === 'unlogged', busy: this._busy[w.entity], missing,
+      yAct: 'yesterday', yTitle: 'Log a water change yesterday', pickAct: 'pick', pickValue: w.last ? lpcKey(w.last) : '', pickTitle: `Pick the date ${p.name}’s water was changed`,
+    });
+  }
+  /* feeding: season- and location-aware schedule */
+  _feed(m, season) {
+    const p = m.p;
+    const next = m.status === 'settle' ? `first feed ${this._date(m.settle.until)}`
+      : m.status === 'paused' ? (p.hold ? 'on hold' : season === 'rest' && !m.lit ? `starts again in ${this._nextGrowMonth()}` : 'no feeding now')
+      : m.last && m.iv ? `next ${this._date(new Date(m.last.getTime() + m.iv * 86400000))}` : '';
+    const meta = m.status === 'missing' ? `${p.entity} isn’t in Home Assistant`
+      : [m.last ? `Fed ${this._date(m.last)} (${this._rel(m.since)})` : 'Not logged yet', next, m.iv ? `every ${this._span(m.iv)}` : ''].filter(Boolean).join(' · ');
+    const dose = String(p.dose || '');
+    const cut = dose.indexOf(' per ');
+    return this._track({
+      kind: 'feed', st: m.status, sc: LPC_STATUS[m.status] || '#9aa0aa',
+      icon: 'mdi:bottle-tonic-plus-outline', label: 'Feeding', head: this._status(m, season), meta,
+      badge: dose ? (cut > 0 ? [dose.slice(0, cut), dose.slice(cut + 1)] : [dose, 'dose']) : null,
+      act: 'feed', val: p.entity, goIcon: 'mdi:bottle-tonic-plus-outline', goLabel: 'Fed', doneLabel: 'Fed today', doneToday: m.since === 0,
+      urgent: lpcNeeds(m.status) || m.status === 'unlogged', busy: this._busy[p.entity], missing: m.status === 'missing',
+      yAct: 'yesterday', yTitle: 'Log a feeding yesterday', pickAct: 'pick', pickValue: m.last ? lpcKey(m.last) : '', pickTitle: `Pick the date ${p.name} was fed`,
+    });
   }
 
   /* ---------- care guide: three labels + standard steps ---------- */
@@ -1171,13 +1245,8 @@ class LinwoodPlantCard extends HTMLElement {
 
   _tile(m, i, season) {
     const p = m.p, sc = LPC_STATUS[m.status], ent = this._esc(p.entity);
-    const busy = this._busy[p.entity];
-    const urgent = lpcNeeds(m.status) || m.status === 'unlogged';
     const just = this._just[p.entity] && Date.now() - this._just[p.entity] < 1600;
     const on = !m.glSt || m.glSt.on;
-    const next = m.status === 'settle' ? this._date(m.settle.until)
-      : m.status === 'paused' ? (p.hold ? p.hold : season === 'rest' && !m.lit ? `${this._nextGrowMonth()}` : '—')
-      : m.last && m.iv ? this._date(new Date(m.last.getTime() + m.iv * 86400000)) : 'When you feed';
     const where = m.lit
       ? `<ha-icon icon="${on ? 'mdi:lightbulb-on' : 'mdi:lightbulb-outline'}"></ha-icon>${this._esc(m.gl ? m.gl.name : 'Grow light')}${m.glSt && m.glSt.un ? ' · offline' : m.glSt && m.glSt.nopower ? ' · no power' : on ? '' : ' · off'}`
       : `<ha-icon icon="mdi:window-closed-variant"></ha-icon>${this._esc(m.loc || 'Window')}`;
@@ -1191,22 +1260,12 @@ class LinwoodPlantCard extends HTMLElement {
   <div class="body">
     <div class="head">
       <div class="nm"><h3>${this._esc(p.name)}</h3><span class="sp">${this._esc(p.species || p.sub || '')}</span></div>
-      ${this._ring(m)}
+      <div class="rings">${this._wRing(m)}${this._ring(m)}</div>
     </div>
-    <dl class="facts">
-      <div><dt>Last fed</dt><dd>${m.last ? `${this._date(m.last)} <i>· ${m.since <= 0 ? 'today' : `${m.since} d`}</i>` : '<i>Not logged</i>'}</dd></div>
-      <div><dt>${m.status === 'settle' ? 'First feed' : 'Next feed'}</dt><dd>${this._esc(next)}${m.iv ? ` <i>· ${this._span(m.iv)}</i>` : ''}</dd></div>
-      <div class="dose"><dt>Dose</dt><dd>${this._esc(p.dose || '—')}</dd></div>
-    </dl>
-    ${m.wat ? this._wat(m) : ''}
+    ${m.wat ? this._wat(m) : m.water ? this._water(m) : ''}
+    ${this._feed(m, season)}
     ${lightTrouble ? this._lightRow(m) : ''}
     ${this._humRow(m)}
-    ${m.water ? this._water(m.water) : ''}
-    <div class="acts">
-      <button class="btn feed${urgent ? ' go' : ''}" data-act="feed" data-val="${ent}" ${busy || m.status === 'missing' ? 'disabled' : ''}>${busy ? '<ha-icon class="spin" icon="mdi:loading"></ha-icon>' : `<ha-icon icon="mdi:bottle-tonic-plus-outline"></ha-icon>${urgent ? 'Feed now' : 'Fed today'}`}</button>
-      <button class="btn sec" data-act="yesterday" data-val="${ent}" title="Log a feeding yesterday">Yesterday</button>
-      <label class="btn sec pick" title="Log a feeding on another date"><ha-icon icon="mdi:calendar-edit"></ha-icon><input type="date" data-act="pick" data-val="${ent}" max="${this._key(new Date())}" value="${m.last ? this._key(m.last) : ''}" aria-label="Pick the date ${this._esc(p.name)} was fed"></label>
-    </div>
     <div class="foot">
       ${this._locSeg(m)}
       <button class="more" data-act="care" data-val="${ent}" aria-haspopup="dialog"><ha-icon icon="mdi:book-open-page-variant-outline"></ha-icon>Care guide</button>
@@ -1863,6 +1922,33 @@ h3 { margin:0; font-size:20px; font-weight:700; letter-spacing:-.01em; white-spa
 .facts dd { margin:3px 0 0; font-size:14px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .facts > .dose dd { margin:0; }
 .facts dd i { font-style:normal; font-weight:500; color:#9aa0aa; }
+/* ---- countdown rings (water + feed) under the drawing ---- */
+.rings { display:flex; gap:10px; flex:none; }
+.rg { display:flex; flex-direction:column; align-items:center; gap:4px; }
+.rgl { display:inline-flex; align-items:center; gap:4px; font-size:10px; letter-spacing:.1em; text-transform:uppercase; font-weight:700; color:#8b919c; }
+.rgl ha-icon { --mdc-icon-size:12px; }
+.rg.k-water .rgl ha-icon { color:#38bdf8; } .rg.k-feed .rgl ha-icon { color:#4ade80; }
+/* ---- trackers: Watering / Fresh water / Feeding, one layout ---- */
+.trk { --tc:#4ade80; display:flex; flex-direction:column; gap:10px; padding:12px; border-radius:16px; background:color-mix(in srgb, var(--tc) 6%, rgba(255,255,255,0.02)); border:1px solid color-mix(in srgb, var(--tc) 18%, transparent); transition:background .25s, border-color .25s; }
+.trk.k-water { --tc:#38bdf8; }
+.trk.s-due, .trk.s-overdue, .trk.s-unlogged { background:color-mix(in srgb, var(--sc) 10%, transparent); border-color:color-mix(in srgb, var(--sc) 45%, transparent); }
+.th { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:10px; }
+.ti { width:34px; height:34px; border-radius:11px; display:flex; align-items:center; justify-content:center; background:color-mix(in srgb, var(--tc) 16%, transparent); color:var(--tc); }
+.trk.s-due .ti, .trk.s-overdue .ti { background:color-mix(in srgb, var(--sc) 18%, transparent); color:var(--sc); }
+.tt { min-width:0; display:flex; flex-direction:column; gap:3px; }
+.tt b { font-size:14px; font-weight:600; color:#e5e7eb; line-height:1.3; }
+.tt em { font-style:normal; color:var(--tc); }
+.trk.s-due em, .trk.s-overdue em, .trk.s-unlogged em, .trk.s-paused em, .trk.s-settle em, .trk.s-checked em, .trk.s-missing em { color:var(--sc); }
+.tt i { font-style:normal; font-size:12px; line-height:1.35; color:#9aa0aa; }
+.tb { display:flex; flex-direction:column; align-items:flex-end; gap:2px; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.tb b { font-size:14px; font-weight:700; color:var(--tc); }
+.tb.lrn b { color:#cbd5e1; }
+.tb i { font-style:normal; font-size:10px; letter-spacing:.1em; text-transform:uppercase; font-weight:700; color:#8b919c; }
+.ta { display:flex; gap:8px; }
+.ta .btn { height:42px; }
+.ta .tgo { flex:1; min-width:0; }
+.ta .moist { padding:0 12px; }
+.trk.k-water .btn.go { background:linear-gradient(145deg,#38bdf8,#0284c7); color:#03182a; box-shadow:0 6px 20px -8px rgba(56,189,248,.7); }
 /* ---- light (only when something's wrong) + humidifier rows ---- */
 .glr, .hum { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:10px; width:100%; padding:10px 12px; border-radius:15px; text-align:left; background:rgba(255,255,255,0.035); border:1px solid rgba(255,255,255,0.06); transition:background .25s, border-color .25s; }
 .gli, .hui { width:32px; height:32px; border-radius:10px; display:flex; align-items:center; justify-content:center; background:rgba(255,255,255,0.06); color:#6b7280; transition:all .25s; }
@@ -2008,6 +2094,18 @@ h3 { margin:0; font-size:20px; font-weight:700; letter-spacing:-.01em; white-spa
   .rail { grid-auto-columns:92%; gap:12px; }
   .art { height:220px; }
   .day { flex:none; width:160px; }
+  .body { padding:14px 12px 12px; gap:12px; }
+  .ring { width:54px; height:54px; }
+  .rings { gap:8px; }
+  .trk { padding:10px; gap:9px; }
+  .th { gap:8px; }
+  .ti { width:30px; height:30px; }
+  .tt b { font-size:13.5px; }
+  .ta { gap:6px; }
+  .ta .btn { height:40px; font-size:13px; }
+  .ta .btn.sec { padding:0 10px; }
+  .ta .pick { width:40px; }
+  .ta .tgo { padding:0 8px; gap:5px; }
   .day.quiet { width:auto; flex:1; }
   .agn { font-size:32px; }
   .chips { gap:6px; }

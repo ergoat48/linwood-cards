@@ -54,7 +54,7 @@ commit is rebuilt and shipped as a new, higher version. (Or in HACS: Linwood Car
 | `src/linwood-weather-card.js` | 1.0.0 | live sky scene, current conditions, hourly temperature curve (sunset / sunrise / midnight marked) and weekly range bars |
 | `src/linwood-calendar-card.js` | 1.1.0 | week strip + agenda |
 | `src/linwood-presence-card.js` | 1.4.0 | live floor plan for Everything Presence radar sensors: walls, doors, furniture, live zones (lit while occupied; optional tidy display `shape` per zone), one gliding dot per person — several sensors share one plan and hand a person off at their exclusion zones, blended into one dot where both see them, with a per-sensor `correction` to line them up; dots beyond the walls or parked at a door / opening drop out, and a hold lost at an exit is treated as gone; Entry/Exit hold ring (optionally gated by a helper), floor projection for high tilted sensors; tap for a full-screen view with every zone and per-sensor status |
-| `src/linwood-plant-card.js` | 4.1.0 | plant care tracker: Due today + week ahead, built-in grow-lights panel, sideways plant carousel, care-guide popup (+ the standalone grow lights card) |
+| `src/linwood-plant-card.js` | 4.2.0 | plant care tracker: Due today + week ahead, built-in grow-lights panel, sideways plant carousel, care-guide popup (+ the standalone grow lights card) |
 | `src/linwood-jump-bar.js` | 1.0.2 | jump-to chips on the Plant Care view (not used since Plant Card 4.0, which has its own chip row) |
 | `src/linwood-shell.js` | 1.4.2 | sidebar room navigation / styling |
 | `src/index.js` | — | list of cards that go into the bundle, in order |
