@@ -38,7 +38,7 @@ const configs = {
   'linwood-climate-card': { entity: 'climate.x', rooms: [{ name: 'X', temperature: 'sensor.x', motion: 'binary_sensor.x' }], auto_away: { entity: 'input_boolean.x', active: 'input_boolean.y', distance: 'sensor.y' }, auto_mix: { entity: 'input_boolean.z', active: 'input_boolean.w', spread: 'sensor.z', paused: 'input_boolean.y' }, auto_air: { entity: 'input_boolean.v', co2: 'sensor.c' }, heat_alert: 'input_boolean.u' },
   'linwood-weather-card': { entity: 'weather.x' },
   'linwood-security-card': { sensors: [{ name: 'X', motion: 'binary_sensor.x', door: 'cover.x' }] },
-  'linwood-plant-card': { plants: [{ entity: 'input_datetime.x', name: 'X' }] },
+  'linwood-plant-card': { plants: [{ entity: 'input_datetime.x', name: 'X', light: 'a' }], lights_panel: { schedule: 'automation.x', lights: [{ id: 'a', entity: 'switch.a' }, { id: 'g', name: 'G', power_script: 'script.p', levels_script: 'script.l', bars: [{ id: 'b', entity: 'switch.b', target: 'input_select.b' }] }] } },
   'linwood-theater-card': { receiver: 'media_player.x' },
   'linwood-tv-card': { soundbar: 'media_player.x' },
   'linwood-appletv-card': { entity: 'media_player.x' },

@@ -1,4 +1,17 @@
-/* Linwood Plant Card v3.8.1 — illustrated plant-care tracker for the Plant Care page.
+/* Linwood Plant Card v4.0.0 — illustrated plant-care tracker for the Plant Care page.
+ * v4.0.0: one full-width card, sized to see more without scrolling.
+ *         · Grow lights live inside the card (`lights_panel:` — same keys as the Grow Lights card): schedule bar and
+ *           Auto/Paused chip, one tap per light (Side light, Mantel bars), Fix when a level is wrong, and a Brightness
+ *           drawer with the per-bar sliders + Apply. The separate Grow Lights card is no longer needed (still works).
+ *         · The four stat tiles are gone. "Due today" stays (count + one chip per task, feeding, soil check or water
+ *           change); next to it is the week ahead — every feeding, soil check and water change due in the next six
+ *           days, grouped by day (days with nothing are left out). Season is a small pill.
+ *         · Plants scroll sideways (scroll-snap carousel, ~4 across on a desktop, one-and-a-bit on an iPhone). The chip
+ *           row above it, grouped by light, jumps to a plant and highlights the ones in view; ‹ › arrows on desktop.
+ *           The light filter row is gone (the chips are grouped by light instead).
+ *         · Smaller tiles: 150 px drawing, compact facts and buttons; a plant's light row only shows when something's
+ *           wrong with its light; the care guide, schedule, light position and watering gaps open in a popup.
+ *         · On phones the grow-lights panel sits below the plants.
  * v3.8.1: every soil check now counts toward the action counts (header "things to do", Due today, Needs-you chips and
  *         the sidebar badge) — including pots still learning their dry-down time, which follow the care guide's
  *         `check` cadence. Before, only learned pots counted, so the counts showed feedings and water changes only.
@@ -102,6 +115,11 @@
  *       tap:   { score: 5, note: '…' }                            # 1 tap is fine … 5 distilled / RO / rain only
  *       steps: { water: '…', light: '…', climate: '…', feed: '…', groom: '…', watch: '…' }
  *     care: [ 'Short tip' ]     # legacy list, used only when there is no guide
+ * lights_panel:                                   # optional (4.0): built-in grow-lights panel — keys as the Grow Lights card
+ *   schedule: automation.living_room_grow_light_schedule
+ *   on_hour: 8
+ *   off_hour: 20
+ *   lights: [ { id: side, entity: switch.x, … }, { id: mantel, name: Mantel bars, power_script, fix, levels_script, bars: […] } ]
  * Also exposes window.LinwoodPlantSummary(hass) → { due, overdue, total } for the Linwood sidebar.
  *
  * type: custom:linwood-grow-lights-card               # every grow light in one panel: schedule bar, toggles, watts, brightness
@@ -550,6 +568,59 @@ const lpcLightSig = (hass, ls) => ls.map((l) => {
 }).join(',');
 const lpcNeeds = (s) => s === 'overdue' || s === 'due';
 
+/* ---------- grow-light controls, shared by the Grow Lights card and the plant card's built-in panel ---------- */
+const lpcHl = (x) => new Date(2000, 0, 1, x).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+const lpcHs = (x) => new Date(2000, 0, 1, x).toLocaleTimeString([], { hour: 'numeric' });
+const lpcFmtMin = (m) => (Math.floor(m / 60) ? `${Math.floor(m / 60)}h ` : '') + `${m % 60}m`;
+const lpcCheckLights = (lights, what) => {
+  if (!Array.isArray(lights) || !lights.length) throw new Error(`Set "${what}" to a list of grow lights`);
+  lights.forEach((l) => {
+    if (l && Array.isArray(l.bars)) { if (!l.bars.length || l.bars.some((b) => !b || !b.entity || !b.id)) throw new Error('Each bar in "bars" needs an "id" and an "entity"'); }
+    else if (!l || !l.entity) throw new Error('Each light needs an "entity" (or "bars")');
+  });
+};
+/* schedule window, what's on, headline + one-line explanation, total draw */
+const lpcSchedule = (hass, c) => {
+  const ON = lpcIv(c.on_hour, 8), OFF = lpcIv(c.off_hour, 20);
+  const now = new Date(), mins = now.getHours() * 60 + now.getMinutes();
+  const inWin = mins >= ON * 60 && mins < OFF * 60;
+  const L = c.lights.map((l) => lpcAnyState(hass, l));
+  const onN = L.filter((s) => s.on).length, unN = L.filter((s) => s.un).length, offN = L.length - onN;
+  const sch = c.schedule ? hass.states[c.schedule] : null, auto = !sch || sch.state === 'on';
+  const head = !offN ? 'Lights on' : !onN ? (unN === L.length ? 'Plugs offline' : 'Lights off') : `${onN} of ${L.length} on`;
+  let sub;
+  if (inWin) sub = !offN ? `${lpcFmtMin(OFF * 60 - mins)} of light left · off at ${lpcHl(OFF)}` : `${offN} off during scheduled hours${unN ? ' (offline)' : ' (manual)'} · off at ${lpcHl(OFF)}`;
+  else { let u = ON * 60 - mins; if (u <= 0) u += 1440; sub = !onN ? `Resting · on at ${lpcHl(ON)}, in ${lpcFmtMin(u)}` : `${onN} on outside the schedule (manual) · on again at ${lpcHl(ON)}`; }
+  if (!auto) sub = `Schedule paused · ${sub}`;
+  const total = L.reduce((a, s) => a + (s.on && s.watts != null ? s.watts : 0), 0);
+  return { ON, OFF, mins, inWin, L, onN, unN, offN, auto, head, sub, total, bl: (ON / 24) * 100, bw: ((OFF - ON) / 24) * 100, np: (mins / 1440) * 100 };
+};
+const lpcHaptic = (el, d) => el.dispatchEvent(new CustomEvent('haptic', { detail: d || 'medium', bubbles: true, composed: true }));
+/* switch a light (or a group of RF bars). Never cuts an RF light's plug — that resets it to 100 % and it stops hearing
+ * the remote; its power script switches it instead. */
+const lpcToggleLight = (hass, l) => {
+  const st = lpcAnyState(hass, l);
+  if (st.un || st.busy) return false;
+  if (st.rf) {
+    if (!l.power_script) return false;
+    hass.callService('script', 'turn_on', { entity_id: l.power_script, variables: { power: st.on ? 'off' : 'on' } });
+  } else hass.callService(l.entity.split('.')[0], st.on ? 'turn_off' : 'turn_on', { entity_id: l.entity });
+  return true;
+};
+/* send every bar's level to the group's levels script in one run; pick(bar) → the level chosen on the slider */
+const lpcApplyLevels = (hass, l, pick) => {
+  if (!l.levels_script) return;
+  const variables = {};
+  lpcGroupState(hass, l).bars.forEach((b) => { variables[b.l.id] = pick(b) || b.target || 100; });
+  hass.callService('script', 'turn_on', { entity_id: l.levels_script, variables });
+};
+const lpcToggleEntity = (hass, id) => {
+  const s = hass.states[id];
+  if (!s || s.state === 'unavailable') return false;
+  hass.callService(id.split('.')[0], s.state === 'on' ? 'turn_off' : 'turn_on', { entity_id: id });
+  return true;
+};
+
 /* ---------- watering log: learn each pot's dry-down time from the gaps between logged waterings ----------
  * Same rules as the "Plant watering reminders" automation: median of the last `window` gaps once `learn` gaps exist;
  * check-soil day = floor(typical × factor + 0.5); "probably dry" after floor(typical + 0.5) + 1 days. */
@@ -732,6 +803,7 @@ class LinwoodPlantCard extends HTMLElement {
   setConfig(config) {
     if (!config || !Array.isArray(config.plants) || !config.plants.length) throw new Error('Set "plants" to a list of plants');
     config.plants.forEach((p) => { if (!p || !p.entity) throw new Error('Each plant needs an input_datetime "entity"'); });
+    if (config.lights_panel) lpcCheckLights(config.lights_panel.lights, 'lights_panel.lights');
     this._config = config;
     this._grow = lpcGrowMonths(config);
     this._litNames = lpcLitNames(config);
@@ -742,8 +814,9 @@ class LinwoodPlantCard extends HTMLElement {
         growing_months: config.growing_months, lit_locations: config.lit_locations, grow_light: config.grow_light, grow_lights: config.grow_lights, settle_days: config.settle_days, water_learning: config.water_learning,
       }));
     } catch (e) { /* private mode */ }
-    this._undo = null; this._busy = {}; this._care = this._care || {}; this._chip = this._chip || {}; this._just = {};
-    this._filter = this._filter || 'all';
+    this._undo = null; this._busy = {}; this._chip = this._chip || {}; this._just = {};
+    this._filter = 'all';                                      // kept for the jump bar (filters are gone since 4.0)
+    this._pend = {}; this._arm = 0; this._vis = this._vis || new Set(); this._railAt = this._railAt || { s: true, e: false };
     this._art = {};
     this._sig = '';
     if (!this.shadowRoot) {
@@ -754,11 +827,18 @@ class LinwoodPlantCard extends HTMLElement {
       this._dlg = document.createElement('dialog');
       this._dlg.className = 'hx';
       this.shadowRoot.append(this._root, this._dlg);
-      this._dlg.addEventListener('close', () => { this._hx = null; this._hxSig = ''; clearInterval(this._hxTick); });
+      this._dlg.addEventListener('close', () => { this._hx = null; this._gd = null; this._hxSig = ''; clearInterval(this._hxTick); });
       this._dlg.addEventListener('click', (ev) => { if (ev.target === this._dlg) this._dlg.close(); });
       this._dlg.addEventListener('pointermove', (ev) => this._hxPoint(ev));
       this._dlg.addEventListener('pointerdown', (ev) => this._hxPoint(ev, true));
       this.shadowRoot.addEventListener('click', (ev) => this._click(ev));
+      // brightness sliders in the grow lights panel: remember the picked level until Apply / Cancel
+      this.shadowRoot.addEventListener('input', (ev) => {
+        const el = ev.composedPath().find((x) => x.dataset && x.dataset.act === 'lvl');
+        if (!el) return;
+        this._pend[`${el.dataset.i}:${el.dataset.bar}`] = LPC_LEVELS[Number(el.value) - 1];
+        this._paint();
+      });
       this.shadowRoot.addEventListener('change', (ev) => {
         const el = ev.target;
         if (!el || !el.dataset || !LPC_DAY_RE.test(el.value || '')) return;
@@ -774,7 +854,9 @@ class LinwoodPlantCard extends HTMLElement {
     const cfg = this._config, lights = lpcLights(cfg);
     const ids = [cfg.grow_light, ...lights.map((l) => l.target), ...cfg.plants.flatMap((p) => [p.entity, p.location, p.water && p.water.entity, p.moved, p.watering && p.watering.log, p.watering && p.watering.checked])].filter(Boolean);
     const hum = cfg.plants.filter((p) => p.humidifier && p.humidifier.entity).map((p) => { const h = lpcHum(hass, p.humidifier); return `${h.status}${h.hum}`; }).join(',');
-    const sig = ids.map((e) => { const s = hass.states[e]; return s ? s.state : '-'; }).join('|') + lpcLightSig(hass, lights) + hum + new Date().toDateString();
+    const lp = cfg.lights_panel;
+    const psig = lp ? [lp.schedule, lp.master].map((e) => { const s = e && hass.states[e]; return s ? s.state : '-'; }).join('|') + lpcLightSig(hass, lp.lights) : '';
+    const sig = ids.map((e) => { const s = hass.states[e]; return s ? s.state : '-'; }).join('|') + lpcLightSig(hass, lights) + psig + hum + new Date().toDateString();
     if (sig !== this._sig) { this._sig = sig; this._paint(); }
     if (this._hx) {
       this._hxLive(hass);
@@ -786,6 +868,9 @@ class LinwoodPlantCard extends HTMLElement {
 
   getCardSize() { return 12; }
   getGridOptions() { return { columns: 'full', rows: 'auto' }; }
+  /* the panel's schedule bar and countdown move with the clock */
+  connectedCallback() { clearInterval(this._tm); this._tm = setInterval(() => { if (this._config && this._config.lights_panel) this._paint(); }, 30000); if (this._hass) this._paint(); }
+  disconnectedCallback() { clearInterval(this._tm); if (this._io) this._io.disconnect(); this._railEl = null; }
 
   /* ---------- actions ---------- */
   _click(ev) {
@@ -801,20 +886,17 @@ class LinwoodPlantCard extends HTMLElement {
     else if (act === 'yesterday') { const d = new Date(); d.setDate(d.getDate() - 1); this._setDate(val, this._key(d)); }
     else if (act === 'clear') this._call('input_datetime', 'set_datetime', { entity_id: val, datetime: '2000-01-01 00:00:00' });
     else if (act === 'loc') { if (el.dataset.cur !== val) this._call('input_select', 'select_option', { entity_id: el.dataset.ent, option: val }); }
-    else if (act === 'care') { this._care[val] = !this._care[val]; this._paint(); }
+    else if (act === 'care') this._gdOpen(val);
     else if (act === 'chip') { const ent = el.dataset.ent; this._chip[ent] = this._chip[ent] === val ? null : val; this._paint(); }
-    else if (act === 'filter') { this._filter = val; this._paint(); }
+    else if (act.startsWith('gl-')) this._glAct(act, el);
+    else if (act === 'rail') { if (this._railEl) this._railEl.scrollBy({ left: Number(val) * this._railEl.clientWidth * 0.85, behavior: this._smooth() }); }
     else if (act === 'more') this.dispatchEvent(new CustomEvent('hass-more-info', { detail: { entityId: val }, bubbles: true, composed: true }));
     else if (act === 'hum') this._hxOpen(val);
     else if (act === 'hxclose') { if (this._dlg && this._dlg.open) this._dlg.close(); }
     else if (act === 'hxrange') { const r = Number(val); if (this._hx && r !== this._hx.range) { this._hx.range = this._hxRange = r; this._hx.hov = null; this._hxFetch(); } }
     else if (act === 'hxsw') this._hxDo('sw');
     else if (act === 'hxauto') this._hxDo('auto');
-    else if (act === 'jump') {
-      if (this._filter !== 'all') { this._filter = 'all'; this._paint(); }
-      const t = this.shadowRoot.getElementById(val);
-      if (t) { t.scrollIntoView({ behavior: 'smooth', block: 'center' }); t.classList.remove('ping'); void t.offsetWidth; t.classList.add('ping'); }
-    }
+    else if (act === 'jump') this._jump(val);
   }
 
   async _call(domain, service, data) {
@@ -1004,32 +1086,29 @@ class LinwoodPlantCard extends HTMLElement {
     else if (w.status === 'ok') {
       head = w.left == null ? `Watered ${ago}` : w.left === 1 ? 'Check the soil tomorrow' : `Check the soil in ${w.left} d`;
       meta = w.learning
-        ? `Watered ${ago} · learning ${Math.min(n, need)} of ${need} waterings${w.guide ? ` · guide: check about every ${w.guide} d` : ''}`
+        ? `Watered ${ago}`
         : `Watered ${ago} · usually dry in about ${typ} d`;
     } else {
       head = w.status === 'overdue' ? 'Probably dry' : 'Check the soil today';
       meta = w.learning
-        ? `Day ${w.since} · the care guide says check about every ${w.guide} d`
+        ? `Day ${w.since} · guide: check about every ${w.guide} d`
         : `Day ${w.since} · usually dry by day ${typ}`;
     }
     const tick = w.typical && w.checkDay && w.checkDay < w.typical ? `<i style="left:${f1((w.checkDay / w.typical) * 100)}%"></i>` : '';
     const badge = w.status === 'missing' || w.status === 'unlogged' ? ''
       : w.learning ? `<span class="wtyp lrn"><b>${Math.min(n, need)}/${need}</b><i>learning</i></span>`
       : `<span class="wtyp"><b>~${typ} d</b><i>typical</i></span>`;
-    const shown = w.gaps.slice(-8), inWin = Math.min(w.recent.length, shown.length);
-    const gaps = shown.length ? `<div class="wgaps"><span class="wgl">Days between waterings</span>${shown.map((g, i) => `<span class="wg${i >= shown.length - inWin ? ' in' : ''}">${g}</span>`).join('')}</div>` : '';
     const today = w.last && w.last === w.today, due = lpcNeeds(w.status);
     const missing = w.status === 'missing';
     return `<div class="wat s-${w.status}${w.learning ? ' lrn' : ''}" style="--sc:${LPC_STATUS[w.status] || '#9aa0aa'}">
   <div class="wh">
     <span class="wi"><ha-icon icon="${due ? 'mdi:watering-can' : 'mdi:watering-can-outline'}"></ha-icon></span>
-    <span class="wt"><b>Watering · <em>${this._esc(head)}</em></b><i>${this._esc(meta)}</i>${w.last ? `<span class="wbar"><span style="width:${Math.round(w.pct * 100)}%"></span>${tick}</span>` : ''}</span>
+    <span class="wt"><b><em>${this._esc(head)}</em></b><i>${this._esc(meta)}</i>${w.last ? `<span class="wbar"><span style="width:${Math.round(w.pct * 100)}%"></span>${tick}</span>` : ''}</span>
     ${badge}
   </div>
-  ${gaps}
   <div class="wacts">
     <button class="btn wbtn wgo${due || w.status === 'unlogged' ? ' go' : ''}" data-act="watered" data-val="${ent}" ${busy || missing || today ? 'disabled' : ''}>${busy ? '<ha-icon class="spin" icon="mdi:loading"></ha-icon>' : `<ha-icon icon="mdi:water-plus-outline"></ha-icon>${today ? 'Watered today' : 'Watered'}`}</button>
-    ${due && w.w.checked ? `<button class="btn wbtn sec" data-act="moist" data-val="${ent}" title="The soil isn't dry yet — check again in ${S.recheck} days"><ha-icon icon="mdi:hand-water"></ha-icon>Still moist</button>` : ''}
+    ${due && w.w.checked ? `<button class="btn wbtn sec" data-act="moist" data-val="${ent}" title="The soil isn't dry yet — check again in ${S.recheck} days"><ha-icon icon="mdi:hand-water"></ha-icon>Moist</button>` : ''}
     <label class="btn wbtn sec pick" title="Log a watering on another date"><ha-icon icon="mdi:calendar-plus"></ha-icon><input type="date" data-act="wpick" data-val="${ent}" max="${w.today || lpcKey(new Date())}" value="" aria-label="Log a watering of ${this._esc(p.name)} on another date" ${missing ? 'disabled' : ''}></label>
   </div>
 </div>`;
@@ -1074,26 +1153,32 @@ class LinwoodPlantCard extends HTMLElement {
     return `<div class="guide">${chips}${gx}${steps ? `<ol class="steps">${steps}</ol>` : ''}</div>`;
   }
 
+  /* feeding schedule + watering rhythm in words (care popup) */
+  _sched(m) {
+    const p = m.p, w = m.wat;
+    const base = p.hold && !m.grow && !m.litIv && !m.rest
+      ? `Feeding on hold — ${p.hold.charAt(0).toLowerCase()}${p.hold.slice(1)}`
+      : [`Growing ${m.grow ? this._span(m.grow) : '— none'}`, m.litIv ? `grow light ${this._span(m.litIv)}` : 'grow light — none', m.rest ? `window ${this._span(m.rest)}` : 'window — rests'].join(' · ');
+    const feed = m.settle ? `Moved under the ${m.gl ? m.gl.name.toLowerCase() : 'grow light'} — no food for ${m.settle.days} days while it adjusts (first feed ${this._date(m.settle.until)}). Then: ${base}` : base;
+    const wSched = !w || w.status === 'missing' ? ''
+      : w.learning ? `Watering — still learning: needs ${w.S.learn} gaps between logged waterings (${w.gaps.length} so far)${w.guide ? `; until then check the soil about every ${w.guide} d` : ''}.`
+      : `Watering — usually every ~${this._typ(w.learned)} d (middle of the last ${w.recent.length} gaps); check the soil from day ${w.checkDay}.`;
+    return { feed: `Feeding — ${feed}${p.dose ? ` · dose ${p.dose}` : ''}${m.water ? ` · fresh water every ${this._span(m.water.iv)}` : ''}.`, water: wSched };
+  }
+
   _tile(m, i, season) {
     const p = m.p, sc = LPC_STATUS[m.status], ent = this._esc(p.entity);
-    const busy = this._busy[p.entity], care = !!this._care[p.entity];
+    const busy = this._busy[p.entity];
     const urgent = lpcNeeds(m.status) || m.status === 'unlogged';
     const just = this._just[p.entity] && Date.now() - this._just[p.entity] < 1600;
     const on = !m.glSt || m.glSt.on;
     const next = m.status === 'settle' ? this._date(m.settle.until)
-      : m.status === 'paused' ? (p.hold ? p.hold : season === 'rest' && !m.lit ? `${this._nextGrowMonth()} (season starts)` : '—')
-      : m.last && m.iv ? this._date(new Date(m.last.getTime() + m.iv * 86400000)) : 'As soon as you feed';
-    const base = p.hold && !m.grow && !m.litIv && !m.rest
-      ? `Feeding on hold — ${p.hold.charAt(0).toLowerCase()}${p.hold.slice(1)}`
-      : [`Growing ${m.grow ? this._span(m.grow) : '— none'}`, m.litIv ? `grow light ${this._span(m.litIv)}` : 'grow light — none', m.rest ? `window ${this._span(m.rest)}` : 'window — rests'].join(' · ');
-    const sched = m.settle ? `Moved under the ${m.gl ? m.gl.name.toLowerCase() : 'grow light'} — no food for ${m.settle.days} days while it adjusts (first feed ${this._date(m.settle.until)}). Then: ${base}` : base;
-    const w = m.wat;
-    const wSched = !w || w.status === 'missing' ? ''
-      : w.learning ? ` · watering: learning — needs ${w.S.learn} gaps between logged waterings (${w.gaps.length} so far)`
-      : ` · watering: usually every ~${this._typ(w.learned)} d (middle of the last ${w.recent.length} gaps), check the soil from day ${w.checkDay}`;
+      : m.status === 'paused' ? (p.hold ? p.hold : season === 'rest' && !m.lit ? `${this._nextGrowMonth()}` : '—')
+      : m.last && m.iv ? this._date(new Date(m.last.getTime() + m.iv * 86400000)) : 'When you feed';
     const where = m.lit
       ? `<ha-icon icon="${on ? 'mdi:lightbulb-on' : 'mdi:lightbulb-outline'}"></ha-icon>${this._esc(m.gl ? m.gl.name : 'Grow light')}${m.glSt && m.glSt.un ? ' · offline' : m.glSt && m.glSt.nopower ? ' · no power' : on ? '' : ' · off'}`
       : `<ha-icon icon="mdi:window-closed-variant"></ha-icon>${this._esc(m.loc || 'Window')}`;
+    const g = m.glSt, lightTrouble = g && (g.warn || g.un || g.nopower);
     return `<article class="tile s-${m.status}${just ? ' just' : ''}" id="lpc-${i}" style="--pc:${this._esc(p.color || '#4ade80')};--sc:${sc}">
   <div class="art${m.lit ? ' lit' : ''}${m.lit && on ? ' on' : ''}">
     ${this._svg(m, i)}
@@ -1106,13 +1191,12 @@ class LinwoodPlantCard extends HTMLElement {
       ${this._ring(m)}
     </div>
     <dl class="facts">
-      <div><dt>Last fed</dt><dd>${m.last ? `${this._date(m.last)} <i>· ${this._ago(m.since, m.last)}</i>` : '<i>Not logged</i>'}</dd></div>
-      <div><dt>${m.status === 'settle' ? 'First feed' : 'Next feed'}</dt><dd>${this._esc(next)}</dd></div>
-      <div><dt>Every</dt><dd>${m.iv ? this._span(m.iv) : `<i>${p.hold ? 'On hold' : 'Not this season'}</i>`}</dd></div>
-      <div><dt>Dose</dt><dd>${this._esc(p.dose || '—')}</dd></div>
+      <div><dt>Last fed</dt><dd>${m.last ? `${this._date(m.last)} <i>· ${m.since <= 0 ? 'today' : `${m.since} d`}</i>` : '<i>Not logged</i>'}</dd></div>
+      <div><dt>${m.status === 'settle' ? 'First feed' : 'Next feed'}</dt><dd>${this._esc(next)}${m.iv ? ` <i>· ${this._span(m.iv)}</i>` : ''}</dd></div>
+      <div class="dose"><dt>Dose</dt><dd>${this._esc(p.dose || '—')}</dd></div>
     </dl>
-    ${w ? this._wat(m) : ''}
-    ${this._lightRow(m)}
+    ${m.wat ? this._wat(m) : ''}
+    ${lightTrouble ? this._lightRow(m) : ''}
     ${this._humRow(m)}
     ${m.water ? this._water(m.water) : ''}
     <div class="acts">
@@ -1122,16 +1206,210 @@ class LinwoodPlantCard extends HTMLElement {
     </div>
     <div class="foot">
       ${this._locSeg(m)}
-      <button class="more${care ? ' open' : ''}" data-act="care" data-val="${ent}" aria-expanded="${care}"><ha-icon icon="mdi:book-open-page-variant-outline"></ha-icon>Care guide<ha-icon class="chev" icon="mdi:chevron-down"></ha-icon></button>
+      <button class="more" data-act="care" data-val="${ent}" aria-haspopup="dialog"><ha-icon icon="mdi:book-open-page-variant-outline"></ha-icon>Care guide</button>
     </div>
-    <div class="care${care ? ' open' : ''}"><div class="ci">
-      ${this._guide(m, season)}
-      <div class="sched"><ha-icon icon="mdi:calendar-sync-outline"></ha-icon><span>${this._esc(sched)}${m.water ? ` · fresh water every ${this._span(m.water.iv)}` : ''}${this._esc(wSched)}</span></div>
-      ${m.last ? `<button class="clear" data-act="clear" data-val="${ent}">Clear last feeding</button>` : ''}
-      ${w && w.last ? `<button class="clear" data-act="wclear" data-val="${ent}" data-day="${w.last}">Remove last watering (${this._date(lpcDayOf(w.last))})</button>` : ''}
-    </div></div>
   </div>
 </article>`;
+  }
+
+  /* ---------- agenda: everything that comes due today and over the next six days (feeding, soil checks, water changes) ---------- */
+  _events(models) {
+    const out = [];
+    const add = (m, day, kind, txt, st) => out.push({ m, day, kind, txt, st, c: LPC_STATUS[st] || '#9aa0aa' });
+    models.forEach((m) => {
+      if (lpcNeeds(m.status)) add(m, 0, 'feed', m.status === 'overdue' ? `Feed · ${-m.left} d late` : 'Feed', m.status);
+      else if (m.status === 'unlogged') add(m, 0, 'feed', 'Log a feeding', 'unlogged');
+      else if ((m.status === 'soon' || m.status === 'ok') && m.left > 0 && m.left <= 6) add(m, m.left, 'feed', 'Feed', m.status);
+      const w = m.water;
+      if (w) {
+        if (lpcNeeds(w.status)) add(m, 0, 'water', w.status === 'overdue' ? `Fresh water · ${-w.left} d late` : 'Fresh water', w.status);
+        else if (w.status === 'unlogged') add(m, 0, 'water', 'Log a water change', 'unlogged');
+        else if ((w.status === 'soon' || w.status === 'ok') && w.left > 0 && w.left <= 6) add(m, w.left, 'water', 'Fresh water', w.status);
+      }
+      const s = m.wat;
+      if (s) {
+        if (s.need) add(m, 0, 'soil', s.status === 'overdue' ? 'Probably dry' : 'Check soil', s.status);
+        else if (s.status === 'ok' && s.left != null && s.left > 0 && s.left <= 6) add(m, s.left, 'soil', 'Check soil', 'ok');
+        else if (s.status === 'checked' && s.recheckOn) { const d = lpcGap(s.today, lpcKey(s.recheckOn)); if (d > 0 && d <= 6) add(m, d, 'soil', 'Recheck soil', 'checked'); }
+      }
+    });
+    const order = { soil: 0, water: 1, feed: 2 };
+    return out.sort((a, b) => a.day - b.day || (lpcNeeds(b.st) - lpcNeeds(a.st)) || order[a.kind] - order[b.kind] || a.m.i - b.m.i);
+  }
+
+  _agenda(events, dueN, season) {
+    const esc = this._esc.bind(this);
+    const KI = { feed: 'mdi:bottle-tonic-plus-outline', soil: 'mdi:watering-can-outline', water: 'mdi:water-sync' };
+    const item = (e) => `<button class="ev k-${e.kind}${lpcNeeds(e.st) ? ' due' : ''}${e.st === 'overdue' ? ' late' : ''}" data-act="jump" data-val="lpc-${e.m.i}" style="--pc:${esc(e.m.p.color || '#4ade80')};--sc:${e.c}" title="${esc(`${e.m.p.name} · ${e.txt}`)}"><ha-icon icon="${KI[e.kind]}"></ha-icon><span><b>${esc(e.m.p.name)}</b><i>${esc(e.txt)}</i></span></button>`;
+    const today = events.filter((e) => e.day === 0);
+    const later = events.filter((e) => e.day > 0);
+    const head = dueN ? `${dueN} thing${dueN > 1 ? 's' : ''} to do` : today.length ? 'A few things to log' : 'All caught up';
+    const nxt = later[0];
+    const quiet = nxt ? `Nothing due · next: ${nxt.m.p.name} ${nxt.day === 1 ? 'tomorrow' : `in ${nxt.day} d`}` : 'Nothing due this week';
+    const sn = season === 'growing'
+      ? { label: 'Growing season', icon: 'mdi:white-balance-sunny', color: '#4ade80', hint: 'Everything on its full feeding schedule' }
+      : { label: 'Resting season', icon: 'mdi:weather-night', color: '#94a3b8', hint: 'Window plants slow down · grow-light plants keep feeding' };
+    const days = [];
+    for (let d = 1; d <= 6; d++) {
+      const dt = new Date(); dt.setHours(12, 0, 0, 0); dt.setDate(dt.getDate() + d);
+      const lab = d === 1 ? 'Tomorrow' : `${dt.toLocaleDateString(undefined, { weekday: 'short' })} ${dt.getDate()}`;
+      const its = later.filter((e) => e.day === d);
+      if (its.length) days.push(`<div class="day"><span class="dl">${esc(lab)}</span>${its.map(item).join('')}</div>`);
+    }
+    if (!days.length) days.push('<div class="day quiet"><span class="dl">Rest of the week</span><span class="none">Nothing scheduled</span></div>');
+    return `<section class="ag">
+  <div class="agt${dueN ? ' hot' : ''}">
+    <div class="agh"><span class="agn">${dueN}</span><span class="agx"><span class="lbl">Due today</span><b>${esc(head)}</b></span></div>
+    <div class="agl">${today.length ? today.map(item).join('') : `<span class="none">${esc(quiet)}</span>`}</div>
+    <span class="season" style="--sn:${sn.color}" title="${esc(`${sn.label} (${this._range(season)}) — ${sn.hint}`)}"><ha-icon icon="${sn.icon}"></ha-icon>${esc(sn.label)} · ${esc(this._range(season))}</span>
+  </div>
+  <div class="agd" aria-label="Coming up this week">${days.join('')}</div>
+</section>`;
+  }
+
+  /* ---------- built-in grow lights panel (lights_panel: same keys as the Grow Lights card) ---------- */
+  _glPick(i, b) { const k = `${i}:${b.l.id}`; return this._pend[k] != null ? this._pend[k] : b.target; }
+  _glPlants(l) {
+    const ids = Array.isArray(l.bars) ? l.bars.map((b) => b.id) : [l.id];
+    const names = this._config.plants.filter((p) => ids.includes(p.light)).map((p) => p.name);
+    return names.length ? (names.length > 2 ? `${names.length} plants` : names.join(' · ')) : (l.plants || l.note || '');
+  }
+  _glTile(s, i) {
+    const l = s.l, esc = this._esc.bind(this);
+    const word = s.group ? (s.un ? 'Offline' : s.busy ? 'Adjusting' : s.nopower ? 'No power' : s.on ? 'On' : 'Off') : lpcLightWord(s);
+    const msg = (s.group ? lpcGroupMsg(s) : lpcLightMsg(s)).replace(' · tap Fix', '').replace(' — tap to power it and turn it on', '');
+    const bad = s.warn || s.nopower || !!s.someUn;
+    const icon = s.un || s.nopower ? 'mdi:lightbulb-alert-outline' : s.busy ? 'mdi:remote' : s.group ? (s.on ? 'mdi:lightbulb-group' : 'mdi:lightbulb-group-outline') : s.on ? 'mdi:lightbulb-on' : 'mdi:lightbulb-outline';
+    const draw = s.on && s.watts != null ? `${lpcWatts(s.watts)} W${s.group ? ` · ${s.bars.filter((b) => b.on).length} of ${s.bars.length} lit` : s.level ? ` · ≈${s.level}%` : ''}` : '';
+    const sub = msg || draw || this._glPlants(l);
+    const canTap = !s.un && !s.busy && (!s.rf || !!l.power_script);
+    const fixable = s.group ? (s.warn || (s.nopower && !s.busy)) : (s.rf && s.warn);
+    const fix = fixable && l.fix ? `<button class="gfix" data-act="gl-fix" data-val="${esc(l.fix)}">Fix</button>` : '';
+    const chart = s.group ? ((s.bars[0] && (s.bars[0].l.power || s.bars[0].l.entity)) || '') : (s.rf && l.power ? l.power : (l.power || l.entity));
+    return `<div class="gt${s.on ? ' on' : ''}${s.un || s.nopower ? ' un' : ''}${bad ? ' warn' : ''}${s.busy ? ' busy' : ''}">
+  <button class="gtb" data-act="gl-toggle" data-i="${i}" aria-pressed="${s.on}" ${canTap ? '' : 'disabled'} title="${esc(`${l.name || 'Light'} — tap to turn ${s.on ? 'off' : 'on'}`)}"><span class="gi"><ha-icon icon="${icon}"></ha-icon></span><span class="gtx"><b>${esc(l.name || 'Light')}</b><em>${word}</em></span></button>
+  <div class="gft"><span class="gsub${bad ? ' wn' : s.busy ? ' bz' : ''}">${esc(sub)}</span>${chart ? `<button class="ginfo" data-act="more" data-val="${esc(chart)}" aria-label="${esc(l.name || 'Light')} history"><ha-icon icon="mdi:chart-line"></ha-icon></button>` : ''}</div>${fix}
+</div>`;
+  }
+  _glBright(L) {
+    const esc = this._esc.bind(this), out = [];
+    L.forEach((s, i) => {
+      if (!s.group || !s.l.levels_script) return;
+      const short = (b) => String(b.l.name || b.l.id).replace(/ bar$/i, '');
+      const dirty = !s.busy && s.bars.some((b) => b.target != null && this._glPick(i, b) !== b.target);
+      const open = this._glOpen || dirty;
+      const sum = s.bars.map((b) => `${esc(short(b))} ${this._glPick(i, b) || '—'}%`).join(' · ');
+      const sliders = open ? `<div class="gsl">${s.bars.map((b) => {
+        const pick = this._glPick(i, b) || 100, changed = b.target != null && pick !== b.target;
+        const now = s.busy ? 'adjusting…' : b.un ? 'offline' : b.nopower ? 'no power' : b.on ? (b.level ? `now ≈${b.level}%` : 'now dark') : 'standby';
+        return `<div class="lv${changed ? ' chg' : ''}"><div class="lvh"><b>${esc(b.l.name || b.l.id)}</b><span>${changed ? `${b.target}% → ` : ''}<em>${pick}%</em></span></div>`
+          + `<input type="range" min="1" max="4" step="1" value="${Math.max(1, LPC_LEVELS.indexOf(pick) + 1)}" data-act="lvl" data-i="${i}" data-bar="${esc(b.l.id)}" aria-label="${esc(b.l.name || b.l.id)} brightness" ${s.busy || s.un ? 'disabled' : ''}>`
+          + `<div class="tk">${LPC_LEVELS.map((x) => `<span>${x}</span>`).join('')}</div><i>${esc(now)}</i></div>`;
+      }).join('')}${dirty ? `<div class="ap"><button class="cx" data-act="gl-cancel" data-i="${i}">Cancel</button><button class="go" data-act="gl-apply" data-i="${i}">Apply</button></div>` : ''}</div>` : '';
+      out.push(`<div class="gbr${open ? ' open' : ''}"><button class="gbs" data-act="gl-bright" aria-expanded="${open}"><ha-icon icon="mdi:brightness-6"></ha-icon><span>Brightness</span><b>${sum}</b><ha-icon class="chev" icon="mdi:chevron-down"></ha-icon></button>${sliders}</div>`);
+    });
+    return out.join('');
+  }
+  _panel() {
+    const c = this._config.lights_panel, h = this._hass;
+    if (!c || !h) return '';
+    const esc = this._esc.bind(this), S = lpcSchedule(h, c);
+    S.L.forEach((s, i) => { if (s.group) s.bars.forEach((b) => { const k = `${i}:${b.l.id}`; if (this._pend[k] != null && this._pend[k] === b.target) delete this._pend[k]; }); });
+    const armed = Date.now() - this._arm < 4000;
+    const schLabel = armed ? (S.auto ? 'Tap again to pause' : 'Tap again to resume') : S.auto ? `Auto · ${lpcHs(S.ON)}–${lpcHs(S.OFF)}` : 'Schedule paused';
+    const ms = c.master ? h.states[c.master] : null, mOn = !!ms && ms.state === 'on', mUn = !ms || ms.state === 'unavailable';
+    const master = c.master ? `<button class="gms${mOn ? ' on' : ''}" data-act="gl-master" data-val="${esc(c.master)}" ${mUn ? 'disabled' : ''}><ha-icon icon="${mOn ? 'mdi:power' : 'mdi:power-off'}"></ha-icon>All grow lights · <b>${mUn ? 'Unavailable' : mOn ? 'On' : 'Off'}</b></button>` : '';
+    const lab = (x, t) => `<span style="left:${f1(x)}%">${t}</span>`;
+    return `<section class="gl${S.onN ? ' lit' : ''}" id="lpc-lights">
+  <div class="ghd"><div class="glh"><span class="lbl">${esc(c.title || 'Grow lights')}</span>${S.onN ? `<span class="gw">${Math.round(S.total)} W</span>` : ''}
+    ${c.schedule ? `<button class="sch${S.auto ? '' : ' paused'}${armed ? ' armed' : ''}" data-act="gl-sched" data-val="${esc(c.schedule)}" title="Tap twice to ${S.auto ? 'pause' : 'resume'} the schedule"><ha-icon icon="${S.auto ? 'mdi:calendar-clock' : 'mdi:calendar-remove'}"></ha-icon>${esc(schLabel)}</button>` : ''}</div>
+  <div class="gls"><b>${esc(S.head)}</b><i>${esc(S.sub)}</i></div>
+  <div class="gtr"><div class="win" style="left:${f1(S.bl)}%;width:${f1(S.bw)}%"></div><div class="now" style="left:calc(${f1(S.np)}% - 1px)"></div></div>
+  <div class="glb">${lab(S.bl, lpcHs(S.ON))}${lab(S.bl + S.bw, lpcHs(S.OFF))}</div>
+  </div>
+  <div class="gtl">${S.L.map((s, i) => this._glTile(s, i)).join('')}</div>
+  <div class="gbw">${this._glBright(S.L)}${master}</div>
+</section>`;
+  }
+  _glAct(act, el) {
+    const c = this._config.lights_panel, h = this._hass;
+    if (!c || !h) return;
+    const i = Number(el.dataset.i), l = c.lights[i], val = el.dataset.val;
+    if (act === 'gl-toggle') { if (l && lpcToggleLight(h, l)) lpcHaptic(this); }
+    else if (act === 'gl-fix') { lpcHaptic(this); h.callService('script', 'turn_on', { entity_id: val }); }
+    else if (act === 'gl-master') { if (lpcToggleEntity(h, val)) lpcHaptic(this); }
+    else if (act === 'gl-bright') { this._glOpen = !this._glOpen; if (!this._glOpen) this._pend = {}; this._paint(); }
+    else if (act === 'gl-apply') { if (l) { lpcHaptic(this); lpcApplyLevels(h, l, (b) => this._glPick(i, b)); this._glOpen = false; } this._paint(); }
+    else if (act === 'gl-cancel') { Object.keys(this._pend).filter((k) => k.startsWith(`${i}:`)).forEach((k) => delete this._pend[k]); this._paint(); }
+    else if (act === 'gl-sched') {
+      // two taps within 4 s: pausing the schedule leaves the lights as they are until it is resumed
+      if (Date.now() - this._arm < 4000) {
+        this._arm = 0;
+        const s = h.states[val];
+        h.callService('automation', s && s.state === 'on' ? 'turn_off' : 'turn_on', { entity_id: val });
+      } else { this._arm = Date.now(); clearTimeout(this._armT); this._armT = setTimeout(() => this._paint(), 4100); }
+      this._paint();
+    }
+  }
+
+  /* ---------- plant carousel: chips (grouped by light) + horizontal scroll-snap rail ---------- */
+  _nav(models, dueIdx) {
+    const esc = this._esc.bind(this);
+    let html = '', last = null;
+    models.forEach((m) => {
+      const g = m.group || 'Other';
+      if (g !== last) { html += `<span class="ng"><ha-icon icon="${m.lit ? 'mdi:lightbulb-on-outline' : 'mdi:window-closed-variant'}"></ha-icon>${esc(g)}</span>`; last = g; }
+      const id = `lpc-${m.i}`;
+      html += `<button class="nc${this._vis.has(id) ? ' vis' : ''}" data-act="jump" data-val="${id}" style="--pc:${esc(m.p.color || '#4ade80')}"><span class="d"></span>${esc(m.p.name)}${dueIdx.has(m.i) ? '<span class="due" title="Something due today"></span>' : ''}</button>`;
+    });
+    const a = this._railAt;
+    return `<div class="rh"><nav class="pn" aria-label="Plants">${html}</nav><span class="arr"><button data-act="rail" data-val="-1" aria-label="Previous plants" ${a.s ? 'disabled' : ''}><ha-icon icon="mdi:chevron-left"></ha-icon></button><button data-act="rail" data-val="1" aria-label="Next plants" ${a.e ? 'disabled' : ''}><ha-icon icon="mdi:chevron-right"></ha-icon></button></span></div>`;
+  }
+  _railHook() {
+    const rail = this._root.querySelector('.rail');
+    if (!rail) return;
+    if (rail !== this._railEl) {
+      this._railEl = rail; this._seen = new WeakSet();
+      if (this._io) this._io.disconnect();
+      this._io = 'IntersectionObserver' in window ? new IntersectionObserver((ents) => {
+        ents.forEach((e) => { if (e.isIntersecting && e.intersectionRatio >= 0.6) this._vis.add(e.target.id); else this._vis.delete(e.target.id); });
+        const chips = Array.from(this._root.querySelectorAll('.nc'));
+        chips.forEach((b) => b.classList.toggle('vis', this._vis.has(b.dataset.val)));
+        /* keep the first visible plant's chip in view in the chip row (phones) */
+        const nav = this._root.querySelector('.pn'), first = chips.find((b) => b.classList.contains('vis'));
+        if (nav && first && nav.scrollWidth > nav.clientWidth + 4) {
+          const l = first.offsetLeft, r = l + first.offsetWidth;
+          if (l < nav.scrollLeft + 8 || r > nav.scrollLeft + nav.clientWidth - 8) nav.scrollTo({ left: Math.max(0, l - 60), behavior: this._smooth() });
+        }
+      }, { root: rail, threshold: [0, 0.6, 1] }) : null;
+      rail.addEventListener('scroll', () => this._railEdge(), { passive: true });
+    }
+    if (this._io) rail.querySelectorAll('.tile').forEach((t) => { if (!this._seen.has(t)) { this._seen.add(t); this._io.observe(t); } });
+    this._railEdge();
+  }
+  _railEdge() {
+    const r = this._railEl;
+    if (!r || !r.isConnected) return;
+    const s = r.scrollLeft < 4, e = r.scrollLeft + r.clientWidth > r.scrollWidth - 4;
+    if (s === this._railAt.s && e === this._railAt.e) return;
+    this._railAt = { s, e };
+    const bs = this._root.querySelectorAll('.arr button');
+    if (bs[0]) bs[0].disabled = s;
+    if (bs[1]) bs[1].disabled = e;
+  }
+  _smooth() { return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'; }
+  _jump(id) {
+    const t = this.shadowRoot.getElementById(id);
+    if (!t) return;
+    const r = this._railEl, behavior = this._smooth();
+    if (r && r.contains(t)) {
+      const pad = parseFloat(getComputedStyle(r).scrollPaddingLeft) || 0;
+      r.scrollTo({ left: Math.max(0, t.offsetLeft - pad), behavior });
+      // the carousel is below the fold (phone, tapped from the agenda): bring it up — only ever scrolls down
+      const rr = r.getBoundingClientRect(), vh = window.innerHeight || 800;
+      if (rr.top > vh * 0.55) window.scrollBy({ top: rr.top - 110, behavior });
+    } else t.scrollIntoView({ behavior, block: 'nearest' });
+    t.classList.remove('ping'); void t.offsetWidth; t.classList.add('ping');
   }
 
   _paint() {
@@ -1140,58 +1418,66 @@ class LinwoodPlantCard extends HTMLElement {
     if (!this._hass) { LwMorph.patch(this._root, `${this._css()}<div class="card"><div class="sk"></div></div>`); return; }
     const season = this._season = lpcSeason(this._grow);
     const models = cfg.plants.map((p, i) => ({ ...lpcModel(this._hass, cfg, p, season), i }));
-    const lights = lpcLights(cfg).map((l) => lpcLightState(this._hass, l));
-    const onN = lights.filter((s) => s.on).length;
-    const need = models.filter((m) => lpcNeeds(m.status) || m.status === 'unlogged' || (m.water && lpcNeeds(m.water.status)) || (m.wat && m.wat.need));
-    const dueN = models.filter((m) => lpcNeeds(m.status)).length + models.filter((m) => m.water && lpcNeeds(m.water.status)).length + models.filter((m) => m.wat && m.wat.need).length;
-    const week = models.filter((m) => (m.status === 'soon' || m.status === 'ok') && m.left <= 7).length;
-    const resting = models.filter((m) => m.status === 'paused' || m.status === 'settle').length;
-    const litN = models.filter((m) => m.lit).length;
-    const upcoming = models.filter((m) => (m.status === 'soon' || m.status === 'ok') && m.left > 0).sort((a, b) => a.left - b.left)[0];
-    const headline = dueN ? `${dueN} thing${dueN > 1 ? 's' : ''} to do today` : need.length ? `${need.length} plant${need.length > 1 ? 's' : ''} to log` : 'Everyone’s looked after';
-    const subline = upcoming ? `Next up: ${upcoming.p.name} in ${this._span(upcoming.left)}` : '';
-    const lightsLine = lights.length ? ` · ${onN ? `${onN} of ${lights.length} lights on` : 'lights off'}` : '';
-    const sn = season === 'growing'
-      ? { label: 'Growing season', icon: 'mdi:white-balance-sunny', color: '#4ade80', hint: 'Everything on its full feeding schedule' }
-      : { label: 'Resting season', icon: 'mdi:weather-night', color: '#94a3b8', hint: 'Window plants slow down · grow-light plants keep feeding' };
-    const locs = [];
-    models.forEach((m) => { const l = m.group || 'Other'; const f = locs.find((x) => x.l === l); if (f) f.n++; else locs.push({ l, n: 1, lit: m.lit }); });
-    if (this._filter !== 'all' && !locs.some((x) => x.l === this._filter)) this._filter = 'all';
-    const shown = models.filter((m) => this._filter === 'all' || (m.group || 'Other') === this._filter);
-    /* one chip per thing to do: feeding, fresh water, watering */
-    const tasks = [];
-    models.forEach((m) => {
-      if (lpcNeeds(m.status) || m.status === 'unlogged') tasks.push({ m, txt: this._status(m, season), c: LPC_STATUS[m.status] });
-      if (m.water && lpcNeeds(m.water.status)) tasks.push({ m, txt: `Water · ${this._wStatus(m.water)}`, c: LPC_STATUS[m.water.status] });
-      if (m.wat && m.wat.need) tasks.push({ m, txt: m.wat.status === 'overdue' ? 'Probably dry' : 'Check soil', c: LPC_STATUS[m.wat.status] });
-    });
-    const chips = tasks.map(({ m, txt, c }) => `<button class="chip" data-act="jump" data-val="lpc-${m.i}" style="--sc:${c};--pc:${this._esc(m.p.color || '#4ade80')}"><span class="cd"></span><b>${this._esc(m.p.name)}</b><span>${this._esc(txt)}</span></button>`).join('');
+    const events = this._events(models);
+    const dueN = events.filter((e) => e.day === 0 && lpcNeeds(e.st)).length;
+    const dueIdx = new Set(events.filter((e) => e.day === 0).map((e) => e.m.i));
+    const panel = this._panel();
     const u = this._undo;
     LwMorph.patch(this._root, `${this._css()}
 <div class="card">
-  <header class="hero">
-    <div class="hl">
-      <span class="ttl">${this._esc(cfg.title || 'Plant care')}</span>
-      <span class="big${dueN ? ' warn' : ''}">${headline}</span>
-      <span class="sub">${models.length} plants · ${litN} under grow lights${lightsLine}${subline ? ` · ${this._esc(subline)}` : ''}</span>
-    </div>
-    <div class="season" style="--sn:${sn.color}"><ha-icon icon="${sn.icon}"></ha-icon><span><b>${sn.label}</b><i>${this._range(season)} · ${sn.hint}</i></span></div>
-  </header>
-  <div class="stats">
-    <div class="stat${dueN ? ' hot' : ''}"><b>${dueN}</b><span>Due today</span></div>
-    <div class="stat"><b>${week}</b><span>This week</span></div>
-    <div class="stat"><b>${resting}</b><span>Resting / settling</span></div>
-    <div class="stat"><b>${models.filter((m) => m.status === 'unlogged').length}</b><span>Never logged</span></div>
-  </div>
-  ${chips ? `<div class="attn"><span class="al">Needs you</span>${chips}</div>` : ''}
-  <nav class="filters" aria-label="Filter by light or location">
-    <button class="${this._filter === 'all' ? 'on' : ''}" data-act="filter" data-val="all">All <i>${models.length}</i></button>
-    ${locs.map((x) => `<button class="${this._filter === x.l ? 'on' : ''}" data-act="filter" data-val="${this._esc(x.l)}"><ha-icon icon="${x.lit ? 'mdi:lightbulb-on-outline' : 'mdi:window-closed-variant'}"></ha-icon>${this._esc(x.l)} <i>${x.n}</i></button>`).join('')}
-  </nav>
-  <div class="grid">${shown.map((m) => this._tile(m, m.i, season)).join('')}</div>
+  ${this._agenda(events, dueN, season)}
+  ${panel}
+  ${this._nav(models, dueIdx)}
+  <div class="rail">${models.map((m) => this._tile(m, m.i, season)).join('')}</div>
   ${u ? `<div class="undo"><span><ha-icon icon="mdi:check-circle"></ha-icon>Logged ${this._esc(u.what)} · <b>${this._esc(u.name)}</b></span><button data-act="undo">Undo</button></div>` : ''}
   ${this._err ? `<div class="err">${this._esc(this._err)}</div>` : ''}
 </div>`);
+    this._railHook();
+    if (this._gd) this._gdPaint();
+  }
+
+  /* ---------- care guide popup (shares the <dialog> with the humidifier popup) ---------- */
+  _gdOpen(entity) {
+    const p = this._plant(entity);
+    if (!p || !this._dlg || !this._hass) return;
+    this._hx = null; clearInterval(this._hxTick);
+    const same = this._gd && this._gd.entity === entity;
+    this._gd = { entity };
+    this._gdPaint();
+    if (!same) { const w = this._dlg.querySelector('.hxw'); if (w) w.scrollTop = 0; }
+    if (!this._dlg.open) { try { this._dlg.showModal(); } catch (e) { this._dlg.setAttribute('open', ''); } }
+  }
+  _gdPaint() { if (this._dlg && this._gd && this._hass) LwMorph.patch(this._dlg, this._gdHtml()); }
+  _gdHtml() {
+    const cfg = this._config, i = cfg.plants.findIndex((x) => x.entity === this._gd.entity);
+    const p = cfg.plants[i], season = this._season || lpcSeason(this._grow);
+    const m = { ...lpcModel(this._hass, cfg, p, season), i }, esc = this._esc.bind(this), ent = esc(p.entity);
+    const g = m.glSt, w = m.wat, sch = this._sched(m);
+    let light = '';
+    if (m.lit && g) {
+      const top = lpcIv(p.top, null), gap = g.l.height && top != null ? f1(g.l.height - top) : null;
+      const bits = [g.l.height ? `light face ${g.l.height}″ above the mantel` : g.l.note, gap != null ? `${gap}″ above the top of the plant` : '', p.riser ? `on a ${p.riser}″ riser` : '', g.target ? `set to ${g.target}%` : ''].filter(Boolean);
+      light = `<div class="sched"><ha-icon icon="mdi:lightbulb-on-outline"></ha-icon><span><b>${esc(g.l.name)}</b> · ${esc(bits.join(' · '))} · now ${esc(lpcLightWord(g).toLowerCase())}${g.on && g.watts != null ? ` (${lpcWatts(g.watts)} W${g.level ? `, ≈${g.level}%` : ''})` : ''}</span></div>`;
+    }
+    let gaps = '';
+    if (w && w.gaps.length) {
+      const shown = w.gaps.slice(-10), inWin = Math.min(w.recent.length, shown.length);
+      gaps = `<div class="wgaps"><span class="wgl">Days between waterings</span>${shown.map((x, k) => `<span class="wg${k >= shown.length - inWin ? ' in' : ''}">${x}</span>`).join('')}</div>`;
+    }
+    return `<div class="hxw gdw" style="--pc:${esc(p.color || '#4ade80')}">
+  <header class="hxh">
+    <span class="hxi gdi"><ha-icon icon="${esc(p.icon || 'mdi:sprout')}"></ha-icon></span>
+    <span class="hxt"><b>${esc(p.name)}</b><i>${esc(p.species || '')}${p.species ? ' · ' : ''}care guide</i></span>
+    <button class="hxclose" data-act="hxclose" aria-label="Close"><ha-icon icon="mdi:close"></ha-icon></button>
+  </header>
+  ${this._guide(m, season)}
+  <div class="sched"><ha-icon icon="mdi:calendar-sync-outline"></ha-icon><span>${esc(sch.feed)}${sch.water ? `<br>${esc(sch.water)}` : ''}</span></div>
+  ${light}${gaps}
+  <div class="gdx">
+    ${m.last ? `<button class="clear" data-act="clear" data-val="${ent}">Clear last feeding (${esc(this._date(m.last))})</button>` : ''}
+    ${w && w.last ? `<button class="clear" data-act="wclear" data-val="${ent}" data-day="${w.last}">Remove last watering (${esc(this._date(lpcDayOf(w.last)))})</button>` : ''}
+  </div>
+</div>`;
   }
 
   /* ---------- humidifier popup: humidity + temperature history, on/off, Auto ---------- */
@@ -1199,6 +1485,7 @@ class LinwoodPlantCard extends HTMLElement {
   _hxOpen(plantEntity) {
     const p = this._config.plants.find((x) => x.entity === plantEntity);
     if (!p || !p.humidifier || !p.humidifier.entity || !this._dlg || !this._hass) return;
+    this._gd = null;
     this._hx = { p, h: p.humidifier, range: this._hxRange || 24, data: null, err: null, hov: null, busy: null };
     this._hxSig = '';
     this._hxPaint();
@@ -1414,87 +1701,178 @@ class LinwoodPlantCard extends HTMLElement {
 * { box-sizing:border-box; }
 button, .btn { font:inherit; color:inherit; background:none; border:none; padding:0; cursor:pointer; -webkit-tap-highlight-color:transparent; touch-action:manipulation; }
 button:disabled { cursor:default; opacity:.5; }
-ha-icon { --mdc-icon-size:18px; display:inline-flex; flex:none; }
-.card { container-type:inline-size; position:relative; background:rgba(255,255,255,0.035); border:1px solid rgba(255,255,255,0.07); border-radius:28px; padding:22px; color:#f3f4f6; font-family:var(--ha-font-family-body, Roboto, sans-serif); }
-.hero { display:flex; flex-wrap:wrap; align-items:flex-start; justify-content:space-between; gap:14px 20px; }
-.hl { display:flex; flex-direction:column; gap:4px; min-width:0; }
-.ttl { font-size:13px; letter-spacing:.14em; font-weight:600; color:#8b919c; text-transform:uppercase; }
-.big { font-size:clamp(22px, 3.2cqi, 30px); font-weight:700; letter-spacing:-.02em; line-height:1.15; }
-.big.warn { color:#f5b83d; }
-.sub { font-size:14px; color:#9aa0aa; }
-.season { display:flex; align-items:center; gap:10px; padding:10px 14px; border-radius:16px; background:color-mix(in srgb, var(--sn) 11%, transparent); border:1px solid color-mix(in srgb, var(--sn) 28%, transparent); max-width:380px; }
-.season ha-icon { color:var(--sn); --mdc-icon-size:22px; }
-.season span { display:flex; flex-direction:column; gap:2px; }
-.season b { font-size:14px; color:var(--sn); }
-.season i { font-style:normal; font-size:12px; color:#9aa0aa; line-height:1.35; }
-.stats { display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:10px; margin-top:18px; }
-.stat { padding:12px 14px; border-radius:16px; background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.05); display:flex; flex-direction:column; gap:2px; }
-.stat b { font-size:24px; font-weight:700; font-variant-numeric:tabular-nums; }
-.stat span { font-size:12px; color:#9aa0aa; }
-.stat.hot { background:linear-gradient(145deg, rgba(245,184,61,0.16), rgba(245,184,61,0.04)); border-color:rgba(245,184,61,0.38); }
-.stat.hot b { color:#f5b83d; }
-.attn { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:14px; }
-.al { font-size:11px; letter-spacing:.14em; font-weight:700; color:#8b919c; text-transform:uppercase; margin-right:2px; }
-.chip { display:inline-flex; align-items:center; gap:7px; padding:7px 12px 7px 10px; border-radius:12px; background:color-mix(in srgb, var(--sc) 12%, transparent); border:1px solid color-mix(in srgb, var(--sc) 36%, transparent); font-size:13px; }
-.chip .cd { width:8px; height:8px; border-radius:50%; background:var(--sc); box-shadow:0 0 8px var(--sc); }
-.chip span { color:var(--sc); font-weight:600; }
-.filters { display:flex; flex-wrap:wrap; gap:6px; margin:18px 0 14px; }
-.filters button { display:inline-flex; align-items:center; gap:6px; padding:8px 13px; border-radius:12px; background:rgba(255,255,255,0.045); border:1px solid rgba(255,255,255,0.06); font-size:13px; font-weight:600; color:#cbd5e1; }
-.filters button i { font-style:normal; color:#8b919c; font-weight:500; }
-.filters button ha-icon { --mdc-icon-size:15px; color:#8b919c; }
-.filters button.on { background:rgba(245,184,61,0.15); border-color:rgba(245,184,61,0.45); color:#fde68a; }
-.filters button.on i, .filters button.on ha-icon { color:#f5b83d; }
-.grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(min(100%, 330px), 1fr)); gap:16px; }
+ha-icon { --mdc-icon-size:16px; display:inline-flex; flex:none; }
+.card { container-type:inline-size; position:relative; display:flex; flex-direction:column; gap:12px; background:rgba(255,255,255,0.035); border:1px solid rgba(255,255,255,0.07); border-radius:22px; padding:14px; color:#f3f4f6; font-family:var(--ha-font-family-body, Roboto, sans-serif); }
+.lbl { font-size:10.5px; letter-spacing:.14em; font-weight:700; color:#8b919c; text-transform:uppercase; }
+.none { font-size:12.5px; color:#6b7280; }
+/* ---- top: agenda + grow lights ---- */
+.ag { display:grid; grid-template-columns:minmax(240px,340px) minmax(0,1fr); gap:10px; min-width:0; }
+.agt { width:100%; display:flex; flex-direction:column; align-items:flex-start; gap:9px; padding:11px 12px; border-radius:16px; background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.06); min-width:0; }
+.agt.hot { background:linear-gradient(145deg, rgba(245,184,61,0.14), rgba(245,184,61,0.03)); border-color:rgba(245,184,61,0.38); }
+.agh { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.agn { font-size:30px; font-weight:800; line-height:1; font-variant-numeric:tabular-nums; color:#f3f4f6; }
+.agt.hot .agn, .agt.hot .agx b { color:#f5b83d; }
+.agx { display:flex; flex-direction:column; gap:2px; min-width:0; flex:1; }
+.agx b { font-size:15px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.season { margin-top:auto; display:inline-flex; align-items:center; gap:5px; padding:3px 8px; border-radius:999px; font-size:11px; font-weight:600; color:var(--sn); background:color-mix(in srgb, var(--sn) 10%, transparent); border:1px solid color-mix(in srgb, var(--sn) 24%, transparent); white-space:nowrap; }
+.season ha-icon { --mdc-icon-size:13px; }
+.agl { display:flex; flex-wrap:wrap; gap:6px; }
+.agd { display:flex; gap:6px; min-width:0; align-items:stretch; overflow-x:auto; scrollbar-width:none; overscroll-behavior-x:contain; -webkit-overflow-scrolling:touch; }
+.agd::-webkit-scrollbar { display:none; }
+.day { flex:1 1 0; min-width:132px; max-width:240px; display:flex; flex-direction:column; gap:5px; padding:9px 8px; border-radius:14px; background:rgba(255,255,255,0.025); border:1px solid rgba(255,255,255,0.045); }
+.day.quiet { max-width:none; background:none; border-style:dashed; }
+.dl { font-size:10.5px; letter-spacing:.1em; font-weight:700; color:#8b919c; text-transform:uppercase; white-space:nowrap; }
+.ev { display:flex; align-items:center; gap:6px; min-width:0; padding:5px 7px 5px 6px; border-radius:10px; text-align:left; background:rgba(255,255,255,0.045); border:1px solid rgba(255,255,255,0.05); transition:background .15s; }
+.ev:hover { background:rgba(255,255,255,0.08); }
+.ev ha-icon { --mdc-icon-size:14px; color:var(--pc); }
+.ev.k-soil ha-icon, .ev.k-water ha-icon { color:#7dd3fc; }
+.ev > span { display:flex; flex-direction:column; min-width:0; line-height:1.2; }
+.ev b { font-size:12px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.ev i { font-style:normal; font-size:10.5px; color:#9aa0aa; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.agl .ev { padding:6px 10px 6px 8px; }
+.ev.due { background:color-mix(in srgb, var(--sc) 13%, transparent); border-color:color-mix(in srgb, var(--sc) 40%, transparent); }
+.ev.due i { color:var(--sc); font-weight:600; }
+.ev.due ha-icon { color:var(--sc); }
+/* ---- grow lights panel ---- */
+.gl { display:grid; grid-template-columns:minmax(240px,1fr) minmax(0,1.6fr) minmax(250px,1fr); gap:10px 14px; align-items:start; padding:11px 12px 12px; border-radius:16px; background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.06); scroll-margin:90px; min-width:0; transition:background .3s, border-color .3s; }
+.gl.lit { background:linear-gradient(180deg, rgba(253,230,138,0.08), rgba(255,255,255,0.03)); border-color:rgba(253,230,138,0.28); }
+.ghd, .gbw { display:flex; flex-direction:column; gap:7px; min-width:0; }
+.glh { display:flex; align-items:center; gap:8px; }
+.glh .lbl { flex:1; }
+.gw { font-size:12px; font-weight:700; color:#fde68a; font-variant-numeric:tabular-nums; }
+.sch { display:inline-flex; align-items:center; gap:5px; padding:4px 9px; border-radius:999px; font-size:11.5px; font-weight:600; color:#cbd5e1; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.07); white-space:nowrap; }
+.sch ha-icon { --mdc-icon-size:13px; color:#8b919c; }
+.sch.paused, .sch.paused ha-icon { color:#f59e0b; }
+.sch.armed { border-color:rgba(245,184,61,0.55); background:rgba(245,184,61,0.12); color:#fde68a; }
+.gls { display:flex; flex-direction:column; gap:1px; }
+.gls b { font-size:15px; font-weight:700; }
+.gl.lit .gls b { color:#fde68a; }
+.gls i { font-style:normal; font-size:12px; color:#9aa0aa; }
+.gtr { position:relative; height:6px; border-radius:3px; background:rgba(255,255,255,.07); margin-top:2px; }
+.gtr .win { position:absolute; top:0; bottom:0; border-radius:3px; background:rgba(253,230,138,.28); }
+.gl.lit .gtr .win { background:linear-gradient(90deg,#fde68a,#f5b83d); }
+.gtr .now { position:absolute; top:-3px; width:2px; height:12px; border-radius:1px; background:#f3f4f6; box-shadow:0 0 6px rgba(255,255,255,.7); }
+.glb { position:relative; height:12px; margin-top:-3px; font-size:10px; color:#6b7280; }
+.glb span { position:absolute; transform:translateX(-50%); white-space:nowrap; }
+.gtl { display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:8px; }
+.gt { position:relative; display:flex; flex-direction:column; gap:4px; padding:8px 9px 9px; border-radius:13px; background:rgba(255,255,255,0.035); border:1px solid rgba(255,255,255,0.06); min-width:0; transition:background .25s, border-color .25s; }
+.gt.on { background:linear-gradient(145deg, rgba(253,230,138,0.12), rgba(253,230,138,0.03)); border-color:rgba(253,230,138,0.3); }
+.gt.warn { border-color:rgba(245,184,61,0.55); }
+.gtb { display:flex; align-items:center; gap:8px; width:100%; text-align:left; }
+.gtb:active:not(:disabled) .gi { transform:scale(.92); }
+.gi { width:30px; height:30px; flex:none; border-radius:10px; display:flex; align-items:center; justify-content:center; background:rgba(255,255,255,0.06); color:#6b7280; transition:all .25s; }
+.gi ha-icon { --mdc-icon-size:19px; }
+.gt.on .gi { background:rgba(253,230,138,0.2); color:#fde68a; box-shadow:0 0 16px -3px rgba(253,230,138,.65); }
+.gt.un .gi { color:#f59e0b; }
+.gt.busy .gi { color:#c4b5fd; background:rgba(167,139,250,0.14); animation:bz 1.4s ease-in-out infinite; }
+.gtx { display:flex; flex-direction:column; min-width:0; line-height:1.2; }
+.gtx b { font-size:13.5px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.gtx em { font-style:normal; font-size:10.5px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:#8b919c; }
+.gt.on .gtx em { color:#fde68a; } .gt.un .gtx em { color:#f59e0b; } .gt.busy .gtx em { color:#c4b5fd; }
+.gft { display:flex; align-items:center; gap:4px; min-width:0; margin-right:-4px; }
+.gft .gsub { flex:1; min-width:0; }
+.ginfo { flex:none; width:26px; height:24px; border-radius:8px; display:flex; align-items:center; justify-content:center; color:#6b7280; }
+.ginfo:hover { color:#e5e7eb; background:rgba(255,255,255,0.06); }
+.ginfo ha-icon { --mdc-icon-size:15px; }
+.gsub { font-size:11.5px; line-height:1.3; color:#9aa0aa; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.gsub.wn { color:#f5b83d; font-weight:600; white-space:normal; }
+.gsub.bz { color:#c4b5fd; font-weight:600; }
+.gfix { align-self:flex-start; padding:5px 12px; border-radius:9px; font-size:12px; font-weight:700; color:#140f24; background:#f5b83d; }
+.gbr { border-radius:13px; background:rgba(0,0,0,0.16); border:1px solid rgba(255,255,255,0.05); }
+.gbs { display:flex; align-items:center; gap:7px; width:100%; padding:8px 10px; font-size:12px; color:#9aa0aa; text-align:left; }
+.gbs ha-icon { --mdc-icon-size:15px; color:#8b919c; }
+.gbs span { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.gbs b { font-weight:700; color:#e5e7eb; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.gbs .chev { transition:transform .25s; } .gbr.open .gbs .chev { transform:rotate(180deg); }
+.gsl { display:grid; grid-template-columns:repeat(auto-fit, minmax(130px, 1fr)); gap:8px; padding:0 9px 10px; }
+.lv { display:flex; flex-direction:column; gap:3px; padding:8px 10px 7px; border-radius:11px; background:rgba(255,255,255,0.035); border:1px solid rgba(255,255,255,0.05); min-width:0; }
+.lv.chg { border-color:rgba(253,230,138,0.45); }
+.lvh { display:flex; justify-content:space-between; align-items:baseline; gap:6px; font-size:12px; }
+.lvh b { font-weight:700; } .lvh span { color:#9aa0aa; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.lvh em { font-style:normal; font-weight:700; color:#f3f4f6; } .lv.chg .lvh em { color:#fde68a; }
+.lv input[type=range] { width:100%; margin:2px 0 0; accent-color:#fde68a; height:22px; cursor:pointer; touch-action:pan-y; }
+.lv input[type=range]:disabled { opacity:.45; cursor:default; }
+.tk { display:flex; justify-content:space-between; font-size:9.5px; color:#6b7280; font-variant-numeric:tabular-nums; padding:0 2px; }
+.lv > i { font-style:normal; font-size:10.5px; color:#9aa0aa; }
+.ap { grid-column:1 / -1; display:flex; justify-content:flex-end; gap:6px; }
+.ap button { padding:7px 14px; border-radius:10px; font-size:12.5px; font-weight:700; }
+.ap .cx { background:rgba(255,255,255,0.06); color:#c9cdd4; }
+.ap .go { background:#fde68a; color:#140f24; }
+.gms { display:flex; align-items:center; gap:7px; padding:7px 10px; border-radius:11px; font-size:12px; color:#9aa0aa; background:rgba(255,255,255,0.035); }
+.gms.on, .gms.on b { color:#fde68a; }
+/* ---- plant chips + carousel ---- */
+.rh { display:flex; align-items:center; gap:8px; min-width:0; }
+.pn { position:relative; flex:1; min-width:0; display:flex; align-items:center; gap:5px; overflow-x:auto; scrollbar-width:none; -webkit-overflow-scrolling:touch; overscroll-behavior-x:contain; padding:2px 0; }
+.pn::-webkit-scrollbar { display:none; }
+.ng { display:inline-flex; align-items:center; gap:4px; flex:none; margin:0 2px 0 8px; font-size:10px; letter-spacing:.1em; text-transform:uppercase; font-weight:700; color:#6b7280; white-space:nowrap; }
+.ng:first-child { margin-left:0; }
+.ng ha-icon { --mdc-icon-size:13px; }
+.nc { position:relative; flex:none; display:inline-flex; align-items:center; gap:6px; padding:6px 11px 6px 9px; border-radius:11px; font-size:12.5px; font-weight:600; color:#aab1bc; background:rgba(255,255,255,0.035); border:1px solid rgba(255,255,255,0.05); white-space:nowrap; transition:background .2s, color .2s, border-color .2s; }
+.nc .d { width:7px; height:7px; border-radius:50%; background:var(--pc); opacity:.75; }
+.nc.vis { color:#f3f4f6; background:color-mix(in srgb, var(--pc) 13%, rgba(255,255,255,0.04)); border-color:color-mix(in srgb, var(--pc) 38%, transparent); }
+.nc.vis .d { opacity:1; box-shadow:0 0 6px var(--pc); }
+.nc .due { position:absolute; top:-2px; right:-2px; width:8px; height:8px; border-radius:50%; background:#f5b83d; box-shadow:0 0 0 2px #15181e; }
+.arr { display:flex; gap:4px; flex:none; }
+.arr button { width:32px; height:32px; border-radius:10px; display:flex; align-items:center; justify-content:center; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.06); color:#cbd5e1; }
+.arr button:hover:not(:disabled) { background:rgba(255,255,255,0.1); }
+.arr button:disabled { opacity:.3; }
+.arr ha-icon { --mdc-icon-size:20px; }
+@media (hover:none) { .arr { display:none; } }
+.rail { position:relative; display:grid; grid-auto-flow:column; grid-auto-columns:calc((100% - 36px) / 4.25); gap:12px; align-items:stretch; overflow-x:auto; overflow-y:hidden; scroll-snap-type:x mandatory; scroll-padding-left:0; overscroll-behavior-x:contain; -webkit-overflow-scrolling:touch; padding-bottom:8px; scrollbar-width:thin; scrollbar-color:rgba(255,255,255,0.14) transparent; }
+.rail::-webkit-scrollbar { height:6px; } .rail::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.14); border-radius:3px; } .rail::-webkit-scrollbar-track { background:transparent; }
 /* ---- plant tile ---- */
-.tile { position:relative; display:flex; flex-direction:column; border-radius:24px; overflow:hidden; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.06); scroll-margin:90px; transition:border-color .3s, box-shadow .3s; }
+.tile { position:relative; display:flex; flex-direction:column; min-width:0; scroll-snap-align:start; border-radius:18px; overflow:hidden; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.06); transition:border-color .3s, box-shadow .3s; }
 .tile.s-overdue { border-color:rgba(248,113,113,0.35); }
 .tile.s-due, .tile.s-unlogged { border-color:rgba(245,184,61,0.32); }
 .tile.ping { animation:ping 1.4s ease; }
-.art { position:relative; height:250px; background:radial-gradient(120% 80% at 50% 105%, color-mix(in srgb, var(--pc) 16%, transparent), transparent 60%), linear-gradient(180deg, #171c27, #0f131a); }
+.art { position:relative; height:150px; background:radial-gradient(120% 80% at 50% 105%, color-mix(in srgb, var(--pc) 16%, transparent), transparent 60%), linear-gradient(180deg, #171c27, #0f131a); }
 .art.lit.on { background:radial-gradient(90% 75% at 50% 0%, rgba(253,230,138,.20), transparent 62%), radial-gradient(120% 80% at 50% 105%, color-mix(in srgb, var(--pc) 16%, transparent), transparent 60%), linear-gradient(180deg, #1c1d22, #0f131a); }
 .art::after { content:''; position:absolute; left:0; right:0; bottom:0; height:1px; background:rgba(255,255,255,0.06); }
-.art svg { position:absolute; inset:14px 0 0; width:100%; height:calc(100% - 14px); }
-.art .fallback { position:absolute; inset:0; margin:auto; --mdc-icon-size:72px; color:var(--pc); width:72px; height:72px; }
+.art svg { position:absolute; inset:12px 0 0; width:100%; height:calc(100% - 12px); }
+.art .fallback { position:absolute; inset:0; margin:auto; --mdc-icon-size:56px; color:var(--pc); width:56px; height:56px; }
 .sway { transform-box:fill-box; transform-origin:50% 100%; animation:sway 8s ease-in-out infinite; animation-delay:calc(var(--d) * -1); }
 .beam { animation:beam 4.5s ease-in-out infinite; }
 .tile.just .art::before { content:''; position:absolute; inset:0; z-index:1; background:radial-gradient(60% 50% at 50% 70%, rgba(74,222,128,.42), transparent 70%); animation:fed 1.5s ease-out forwards; pointer-events:none; }
-.pill { position:absolute; top:12px; z-index:2; display:inline-flex; align-items:center; gap:6px; padding:6px 11px; border-radius:999px; font-size:12.5px; font-weight:700; background:rgba(10,12,16,.62); -webkit-backdrop-filter:blur(8px); backdrop-filter:blur(8px); border:1px solid rgba(255,255,255,.08); }
-.pill.st { left:12px; color:var(--sc); }
-.pill .dot { width:8px; height:8px; border-radius:50%; background:var(--sc); box-shadow:0 0 8px var(--sc); }
+.pill { position:absolute; top:8px; z-index:2; display:inline-flex; align-items:center; gap:5px; max-width:calc(50% - 10px); padding:4px 9px; border-radius:999px; font-size:11px; font-weight:700; background:rgba(10,12,16,.62); -webkit-backdrop-filter:blur(8px); backdrop-filter:blur(8px); border:1px solid rgba(255,255,255,.08); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.pill.st { left:8px; color:var(--sc); }
+.pill .dot { width:7px; height:7px; flex:none; border-radius:50%; background:var(--sc); box-shadow:0 0 8px var(--sc); }
 .tile.s-ok .pill .dot, .tile.s-paused .pill .dot, .tile.s-settle .pill .dot { box-shadow:none; }
-.pill.where { right:12px; color:#cbd5e1; font-weight:600; }
-.pill.where ha-icon { --mdc-icon-size:15px; color:#9aa0aa; }
-.art.lit.on .pill.where { color:#fde68a; border-color:rgba(253,230,138,.35); box-shadow:0 0 18px -6px rgba(253,230,138,.7); } .art.lit.on .pill.where ha-icon { color:#f5b83d; }
-.body { display:flex; flex-direction:column; gap:14px; padding:16px 16px 14px; }
-.head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
-.nm { min-width:0; display:flex; flex-direction:column; gap:3px; }
-h3 { margin:0; font-size:20px; font-weight:700; letter-spacing:-.01em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.sp { font-size:13px; color:#9aa0aa; font-style:italic; }
-.ring { position:relative; flex:none; width:62px; height:62px; }
+.pill.where { right:8px; color:#cbd5e1; font-weight:600; }
+.pill.where ha-icon { --mdc-icon-size:13px; color:#9aa0aa; }
+.art.lit.on .pill.where { color:#fde68a; border-color:rgba(253,230,138,.35); } .art.lit.on .pill.where ha-icon { color:#f5b83d; }
+.body { flex:1; display:flex; flex-direction:column; gap:9px; padding:10px 11px 11px; }
+.body > .foot { margin-top:auto; }
+.head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.nm { min-width:0; display:flex; flex-direction:column; gap:1px; }
+h3 { margin:0; font-size:16px; font-weight:700; letter-spacing:-.01em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.sp { font-size:11.5px; color:#9aa0aa; font-style:italic; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.ring { position:relative; flex:none; width:44px; height:44px; }
 .ring svg { width:100%; height:100%; }
-.rt { fill:none; stroke:rgba(255,255,255,0.08); stroke-width:5; }
-.rf { fill:none; stroke:var(--sc); stroke-width:5; stroke-linecap:round; transition:stroke-dasharray .4s; }
+.rt { fill:none; stroke:rgba(255,255,255,0.08); stroke-width:5.5; }
+.rf { fill:none; stroke:var(--sc); stroke-width:5.5; stroke-linecap:round; transition:stroke-dasharray .4s; }
 .rc { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; line-height:1; }
-.rc b { font-size:17px; font-weight:800; font-variant-numeric:tabular-nums; color:#f3f4f6; }
-.rc b ha-icon { --mdc-icon-size:20px; color:#94a3b8; }
-.rc i { font-style:normal; font-size:9.5px; letter-spacing:.08em; text-transform:uppercase; color:#8b919c; margin-top:3px; }
-.facts { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:8px; margin:0; }
-.facts > div { padding:9px 11px; border-radius:13px; background:rgba(255,255,255,0.035); min-width:0; }
-.facts dt { font-size:10.5px; letter-spacing:.12em; text-transform:uppercase; font-weight:700; color:#8b919c; }
-.facts dd { margin:3px 0 0; font-size:14px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.rc b { font-size:13px; font-weight:800; font-variant-numeric:tabular-nums; color:#f3f4f6; }
+.rc b ha-icon { --mdc-icon-size:15px; color:#94a3b8; }
+.rc i { font-style:normal; font-size:7.5px; letter-spacing:.06em; text-transform:uppercase; color:#8b919c; margin-top:2px; }
+.facts { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:5px; margin:0; }
+.facts > div { padding:5px 8px; border-radius:9px; background:rgba(255,255,255,0.035); min-width:0; }
+.facts > .dose { grid-column:1 / -1; display:flex; align-items:baseline; gap:8px; }
+.facts dt { font-size:9px; letter-spacing:.12em; text-transform:uppercase; font-weight:700; color:#8b919c; white-space:nowrap; }
+.facts dd { margin:1px 0 0; font-size:12.5px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.facts > .dose dd { margin:0; }
 .facts dd i { font-style:normal; font-weight:500; color:#9aa0aa; }
-/* ---- grow light + humidifier rows ---- */
-.glr, .hum { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:10px; width:100%; padding:10px 12px; border-radius:15px; text-align:left; background:rgba(255,255,255,0.035); border:1px solid rgba(255,255,255,0.06); transition:background .25s, border-color .25s; }
-.gli, .hui { width:32px; height:32px; border-radius:10px; display:flex; align-items:center; justify-content:center; background:rgba(255,255,255,0.06); color:#6b7280; transition:all .25s; }
-.glt, .hut { min-width:0; display:flex; flex-direction:column; gap:3px; }
-.glt b, .hut b { font-size:13.5px; font-weight:600; color:#e5e7eb; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+/* ---- light (only when something's wrong) + humidifier rows ---- */
+.glr, .hum { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:8px; width:100%; padding:7px 9px; border-radius:12px; text-align:left; background:rgba(255,255,255,0.035); border:1px solid rgba(255,255,255,0.06); transition:background .25s, border-color .25s; }
+.gli, .hui { width:28px; height:28px; border-radius:9px; display:flex; align-items:center; justify-content:center; background:rgba(255,255,255,0.06); color:#6b7280; transition:all .25s; }
+.glt, .hut { min-width:0; display:flex; flex-direction:column; gap:1px; }
+.glt b, .hut b { font-size:12.5px; font-weight:600; color:#e5e7eb; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .glt em, .hut em { font-style:normal; color:#9aa0aa; }
-.glt i, .hut i { font-style:normal; font-size:12px; line-height:1.35; color:#9aa0aa; }
-.glw { display:flex; flex-direction:column; align-items:flex-end; gap:2px; font-variant-numeric:tabular-nums; white-space:nowrap; }
-.glw b { font-size:13px; font-weight:700; color:#fde68a; }
-.glw i { font-style:normal; font-size:11px; color:#9aa0aa; }
+.glt i, .hut i { font-style:normal; font-size:11px; line-height:1.3; color:#9aa0aa; }
+.glw { display:flex; flex-direction:column; align-items:flex-end; gap:1px; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.glw b { font-size:12px; font-weight:700; color:#fde68a; }
+.glw i { font-style:normal; font-size:10.5px; color:#9aa0aa; }
 .glr.on { background:linear-gradient(145deg, rgba(253,230,138,0.10), rgba(253,230,138,0.025)); border-color:rgba(253,230,138,0.28); }
-.glr.on .gli { background:rgba(253,230,138,0.18); color:#fde68a; box-shadow:0 0 16px -3px rgba(253,230,138,.6); }
+.glr.on .gli { background:rgba(253,230,138,0.18); color:#fde68a; }
 .glr.on em { color:#fde68a; }
 .glr.un em, .glr.un .gli { color:#f59e0b; }
 .glr.warn { border-color:rgba(245,184,61,0.5); } .glr.warn i { color:#f5b83d; }
@@ -1502,69 +1880,65 @@ h3 { margin:0; font-size:20px; font-weight:700; letter-spacing:-.01em; white-spa
 .hum.h-run { background:rgba(56,189,248,0.08); border-color:rgba(56,189,248,0.26); }
 .hum.h-run .hui { background:rgba(56,189,248,0.18); color:#7dd3fc; } .hum.h-run em { color:#7dd3fc; }
 .hum.h-dry, .hum.h-un { border-color:rgba(245,184,61,0.45); } .hum.h-dry em, .hum.h-dry i, .hum.h-dry .hui, .hum.h-un em { color:#f5b83d; }
-.water { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:10px; padding:10px 10px 10px 12px; border-radius:15px; background:rgba(56,189,248,0.07); border:1px solid rgba(56,189,248,0.18); }
+.hum .hux { width:26px; height:26px; border-radius:8px; display:flex; align-items:center; justify-content:center; color:#7dd3fc; background:rgba(56,189,248,0.10); }
+.hum .hux ha-icon { --mdc-icon-size:15px; }
+.hum:hover { background:rgba(56,189,248,0.10); }
+.water { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:8px; padding:7px 8px 7px 9px; border-radius:12px; background:rgba(56,189,248,0.07); border:1px solid rgba(56,189,248,0.18); }
 .water.s-overdue, .water.s-due { background:rgba(56,189,248,0.14); border-color:rgba(56,189,248,0.45); }
-.wi { width:32px; height:32px; border-radius:10px; display:flex; align-items:center; justify-content:center; background:rgba(56,189,248,0.16); color:#38bdf8; }
-.wt { min-width:0; display:flex; flex-direction:column; gap:3px; }
-.wt b { font-size:13.5px; font-weight:600; color:#e0f2fe; } .wt em { font-style:normal; color:var(--sc); }
+.wi { width:28px; height:28px; border-radius:9px; display:flex; align-items:center; justify-content:center; background:rgba(56,189,248,0.16); color:#38bdf8; }
+.wt { min-width:0; display:flex; flex-direction:column; gap:2px; }
+.wt b { font-size:12.5px; font-weight:600; color:#e0f2fe; } .wt em { font-style:normal; color:var(--sc); }
 .water.s-ok .wt em, .water.s-soon .wt em { color:#7dd3fc; }
-.wt i { font-style:normal; font-size:12px; color:#9aa0aa; }
+.wt i { font-style:normal; font-size:11px; color:#9aa0aa; }
 .wbar { position:relative; display:block; height:3px; border-radius:2px; background:rgba(255,255,255,0.08); overflow:hidden; }
 .wbar span { display:block; height:100%; background:#38bdf8; }
 /* ---- watering log (soil plants) ---- */
-.wat { display:flex; flex-direction:column; gap:10px; padding:11px 12px 12px; border-radius:15px; background:rgba(56,189,248,0.05); border:1px solid rgba(56,189,248,0.15); transition:background .25s, border-color .25s; }
+.wat { display:flex; flex-direction:column; gap:7px; padding:8px 9px 9px; border-radius:12px; background:rgba(56,189,248,0.05); border:1px solid rgba(56,189,248,0.15); transition:background .25s, border-color .25s; }
 .wat.s-due { background:rgba(56,189,248,0.11); border-color:rgba(56,189,248,0.42); }
 .wat.s-overdue { background:rgba(248,113,113,0.08); border-color:rgba(248,113,113,0.45); }
 .wat.lrn.s-due { background:rgba(245,184,61,0.07); border-color:rgba(245,184,61,0.32); }
 .wat.s-ok .wt em, .wat.s-checked .wt em { color:#7dd3fc; }
 .wat.s-unlogged .wt em { color:#e5e7eb; }
 .wat.s-overdue .wi { background:rgba(248,113,113,0.16); color:#f87171; }
-.wh { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:10px; }
+.wh { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:8px; }
 .wat .wt b { line-height:1.3; }
-.wat .wt i { line-height:1.35; }
+.wat .wt i { line-height:1.3; }
 .wat .wbar { margin-top:2px; }
 .wat .wbar i { position:absolute; top:0; bottom:0; width:2px; margin-left:-1px; background:#f5b83d; }
-.wtyp { display:flex; flex-direction:column; align-items:flex-end; gap:2px; white-space:nowrap; font-variant-numeric:tabular-nums; }
-.wtyp b { font-size:14px; font-weight:700; color:#7dd3fc; }
-.wtyp i { font-style:normal; font-size:10px; letter-spacing:.1em; text-transform:uppercase; font-weight:700; color:#8b919c; }
+.wtyp { display:flex; flex-direction:column; align-items:flex-end; gap:1px; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.wtyp b { font-size:12.5px; font-weight:700; color:#7dd3fc; }
+.wtyp i { font-style:normal; font-size:8.5px; letter-spacing:.1em; text-transform:uppercase; font-weight:700; color:#8b919c; }
 .wtyp.lrn b { color:#cbd5e1; }
 .wgaps { display:flex; flex-wrap:wrap; align-items:center; gap:5px; }
 .wgl { font-size:10px; letter-spacing:.1em; text-transform:uppercase; font-weight:700; color:#8b919c; margin-right:3px; }
 .wg { min-width:24px; padding:2px 6px; border-radius:7px; text-align:center; font-size:12px; font-weight:700; font-variant-numeric:tabular-nums; background:rgba(255,255,255,0.05); color:#6b7280; }
 .wg.in { background:rgba(56,189,248,0.14); color:#bae6fd; }
-.wacts { display:flex; gap:8px; }
+.wacts { display:flex; gap:6px; }
 .wacts .wgo { flex:1; min-width:0; }
-.wacts .pick { width:40px; flex:none; }
-.acts { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:8px; }
-.btn { position:relative; height:46px; border-radius:14px; display:inline-flex; align-items:center; justify-content:center; gap:7px; padding:0 14px; background:rgba(255,255,255,0.07); border:1px solid rgba(255,255,255,0.08); color:#e5e7eb; font-size:14px; font-weight:700; transition:background .15s, transform .1s; }
+.wacts .pick { width:34px; flex:none; }
+.acts { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:6px; }
+.btn { position:relative; height:36px; border-radius:11px; display:inline-flex; align-items:center; justify-content:center; gap:6px; padding:0 11px; background:rgba(255,255,255,0.07); border:1px solid rgba(255,255,255,0.08); color:#e5e7eb; font-size:13px; font-weight:700; white-space:nowrap; transition:background .15s, transform .1s; }
 .btn:hover:not(:disabled) { background:rgba(255,255,255,0.11); }
 .btn:active:not(:disabled) { transform:scale(.97); }
 .btn.go { background:linear-gradient(145deg,#4ade80,#16a34a); border-color:transparent; color:#04210e; box-shadow:0 6px 20px -8px rgba(74,222,128,.7); }
-.btn.sec { font-weight:600; color:#cbd5e1; padding:0 13px; }
-.btn.wbtn { height:38px; font-size:13px; padding:0 12px; }
+.btn.sec { font-weight:600; color:#cbd5e1; padding:0 10px; }
+.btn.wbtn { height:30px; font-size:12px; padding:0 10px; border-radius:9px; }
 .btn.wbtn.go { background:linear-gradient(145deg,#38bdf8,#0284c7); color:#03182a; box-shadow:0 6px 20px -8px rgba(56,189,248,.7); }
-.pick { width:46px; padding:0; }
+.pick { width:36px; padding:0; }
 .btn.wbtn.pick { padding:0; }
 .pick input { position:absolute; inset:0; width:100%; height:100%; opacity:0; cursor:pointer; color-scheme:dark; }
 .pick input::-webkit-calendar-picker-indicator { position:absolute; inset:0; width:100%; height:100%; cursor:pointer; }
-.foot { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }
-.seg { display:inline-flex; gap:3px; padding:3px; border-radius:13px; background:rgba(0,0,0,0.25); border:1px solid rgba(255,255,255,0.06); }
-.seg button { display:inline-flex; align-items:center; gap:5px; padding:6px 10px; border-radius:10px; font-size:12.5px; font-weight:600; color:#9aa0aa; }
-.seg button ha-icon { --mdc-icon-size:14px; }
+.foot { display:flex; align-items:center; justify-content:space-between; gap:6px; flex-wrap:wrap; }
+.seg { display:inline-flex; gap:2px; padding:2px; border-radius:10px; background:rgba(0,0,0,0.25); border:1px solid rgba(255,255,255,0.06); }
+.seg button { display:inline-flex; align-items:center; gap:4px; padding:4px 8px; border-radius:8px; font-size:11.5px; font-weight:600; color:#9aa0aa; }
+.seg button ha-icon { --mdc-icon-size:13px; }
 .seg button.on { background:rgba(255,255,255,0.10); color:#f3f4f6; }
 .seg button.on.lit { background:rgba(245,184,61,0.18); color:#fde68a; }
-.more { display:inline-flex; align-items:center; gap:6px; padding:7px 10px; border-radius:11px; font-size:13px; font-weight:600; color:#9aa0aa; }
+.more { display:inline-flex; align-items:center; gap:5px; padding:5px 8px; border-radius:9px; font-size:12px; font-weight:600; color:#9aa0aa; }
 .more:hover { background:rgba(255,255,255,0.05); color:#e5e7eb; }
-.more ha-icon { --mdc-icon-size:16px; }
-.more .chev { transition:transform .25s; } .more.open .chev { transform:rotate(180deg); }
-.care { display:grid; grid-template-rows:0fr; transition:grid-template-rows .3s ease; margin-top:-8px; }
-.care.open { grid-template-rows:1fr; }
-.ci { overflow:hidden; min-height:0; }
-.care ul { margin:8px 0 0; padding:0; list-style:none; display:flex; flex-direction:column; gap:7px; }
-.care ul li { position:relative; padding-left:16px; font-size:13px; line-height:1.45; color:#cbd5e1; }
-.care ul li::before { content:''; position:absolute; left:3px; top:7px; width:6px; height:6px; border-radius:50%; background:var(--pc); opacity:.8; }
-/* ---- care guide ---- */
-.guide { display:flex; flex-direction:column; gap:10px; margin-top:10px; }
+.more ha-icon { --mdc-icon-size:15px; }
+/* ---- care guide (popup) ---- */
+.guide { display:flex; flex-direction:column; gap:10px; }
 .chips { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:8px; }
 .gc { display:flex; flex-direction:column; align-items:flex-start; gap:3px; min-width:0; padding:10px 10px 9px 11px; border-radius:14px; text-align:left; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.08); box-shadow:0 1px 0 rgba(255,255,255,0.04) inset, 0 2px 6px -3px rgba(0,0,0,.5); transition:background .15s, border-color .15s, transform .1s; }
 .gc:hover { background:rgba(255,255,255,0.08); }
@@ -1599,26 +1973,44 @@ h3 { margin:0; font-size:20px; font-weight:700; letter-spacing:-.01em; white-spa
 .si ha-icon { --mdc-icon-size:16px; }
 .steps b { display:block; font-size:10.5px; letter-spacing:.12em; text-transform:uppercase; font-weight:700; color:#8b919c; margin:1px 0 3px; }
 .steps p { margin:0; font-size:13px; line-height:1.5; color:#d1d5db; }
-.sched { display:flex; gap:8px; margin-top:10px; padding:9px 11px; border-radius:12px; background:rgba(255,255,255,0.035); font-size:12px; line-height:1.45; color:#9aa0aa; }
+.sched { display:flex; gap:8px; padding:9px 11px; border-radius:12px; background:rgba(255,255,255,0.035); font-size:12px; line-height:1.45; color:#9aa0aa; }
+.sched b { color:#e5e7eb; }
 .sched ha-icon { --mdc-icon-size:15px; margin-top:1px; }
-.clear { display:block; margin-top:8px; font-size:12.5px; font-weight:600; color:#f87171; padding:4px 2px; }
-.undo { position:sticky; bottom:12px; z-index:5; display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:14px; padding:11px 14px; border-radius:16px; background:rgba(16,40,26,.92); -webkit-backdrop-filter:blur(10px); backdrop-filter:blur(10px); border:1px solid rgba(74,222,128,0.35); font-size:14px; color:#d1fae5; box-shadow:0 10px 30px -10px rgba(0,0,0,.6); }
+.care ul, .guide ul { margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:7px; }
+.guide ul li { position:relative; padding-left:16px; font-size:13px; line-height:1.45; color:#cbd5e1; }
+.guide ul li::before { content:''; position:absolute; left:3px; top:7px; width:6px; height:6px; border-radius:50%; background:var(--pc); opacity:.8; }
+.gdi { background:color-mix(in srgb, var(--pc) 16%, transparent); color:var(--pc); }
+.gdx { display:flex; flex-wrap:wrap; gap:4px 16px; }
+.clear { display:block; font-size:12.5px; font-weight:600; color:#f87171; padding:4px 2px; }
+.undo { position:sticky; bottom:12px; z-index:5; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 14px; border-radius:14px; background:rgba(16,40,26,.92); -webkit-backdrop-filter:blur(10px); backdrop-filter:blur(10px); border:1px solid rgba(74,222,128,0.35); font-size:13.5px; color:#d1fae5; box-shadow:0 10px 30px -10px rgba(0,0,0,.6); }
 .undo span { display:flex; align-items:center; gap:8px; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .undo ha-icon { color:#4ade80; }
 .undo button { color:#4ade80; font-weight:700; padding:4px 6px; }
-.err { margin-top:10px; padding:9px 12px; border-radius:12px; background:rgba(248,113,113,0.12); color:#fecaca; font-size:13px; }
+.err { padding:9px 12px; border-radius:12px; background:rgba(248,113,113,0.12); color:#fecaca; font-size:13px; }
 .sk { height:420px; border-radius:20px; background:linear-gradient(90deg, rgba(255,255,255,0.04), rgba(255,255,255,0.08), rgba(255,255,255,0.04)); background-size:200% 100%; animation:sh 1.4s linear infinite; }
 .spin { animation:rot 1s linear infinite; }
-@container (max-width: 560px) {
-  .card { padding:16px; }
-  .stats { grid-template-columns:repeat(2, minmax(0,1fr)); }
-  .season { max-width:none; width:100%; }
-  .art { height:220px; }
+/* ---- sizes: how many tiles show at once, how the top section folds ---- */
+@container (max-width: 1250px) { .rail { grid-auto-columns:calc((100% - 24px) / 3.25); } }
+@container (max-width: 1100px) { .ag { grid-template-columns:minmax(0,1fr); } }
+@container (max-width: 1000px) {
+  .gl { grid-template-columns:minmax(0,1fr) minmax(0,1fr); }
+  .gl .gtl { grid-column:1 / -1; grid-row:2; }
+  .gl .gbw { grid-column:2; grid-row:1; }
 }
-/* ---- humidifier row → popup ---- */
-.hum .hux { width:30px; height:30px; border-radius:10px; display:flex; align-items:center; justify-content:center; color:#7dd3fc; background:rgba(56,189,248,0.10); }
-.hum .hux ha-icon { --mdc-icon-size:17px; }
-.hum:hover { background:rgba(56,189,248,0.10); }
+@container (max-width: 900px) {
+  .rail { grid-auto-columns:calc((100% - 12px) / 2.2); }
+}
+@container (max-width: 640px) {
+  .card { padding:10px; border-radius:18px; gap:10px; }
+  .gl { grid-template-columns:minmax(0,1fr); order:5; }
+  .gl .gtl, .gl .gbw { grid-column:auto; grid-row:auto; }
+  .rail { grid-auto-columns:84%; gap:10px; }
+  .day { flex:none; width:136px; }
+  .day.quiet { width:auto; flex:1; }
+  .agn { font-size:26px; }
+  .chips { gap:6px; }
+}
+@container (max-width: 380px) { .rail { grid-auto-columns:90%; } }
 /* ---- humidifier popup (a <dialog> beside the card, so it sits above the whole dashboard). The HA iOS app draws edge
  * to edge, so the popup is laid out inside the safe area: 12px below the status bar, 12px above the home indicator. */
 dialog.hx { --hx-t:calc(env(safe-area-inset-top, 0px) + 12px); --hx-b:calc(env(safe-area-inset-bottom, 0px) + 12px); inset:var(--hx-t) 0 var(--hx-b); padding:0; margin:auto; border:none; background:transparent; color:#f3f4f6; width:min(720px, calc(100vw - 24px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px))); max-width:none; max-height:calc(100dvh - var(--hx-t) - var(--hx-b)); overflow:visible; font-family:var(--ha-font-family-body, Roboto, sans-serif); }
@@ -1718,6 +2110,7 @@ dialog.hx[open] { animation:hxin .22s cubic-bezier(.2,.8,.2,1); }
 @keyframes hxin { from { opacity:0; transform:translateY(12px) scale(.98); } }
 @media (prefers-reduced-motion: reduce) { dialog.hx[open], .hxsk { animation:none; } }
 @keyframes sway { 0%,100% { transform:rotate(-.9deg); } 50% { transform:rotate(.9deg); } }
+@keyframes bz { 50% { opacity:.55; } }
 @keyframes beam { 0%,100% { opacity:.8; } 50% { opacity:1; } }
 @keyframes fed { 0% { opacity:0; transform:scale(.8); } 30% { opacity:1; } 100% { opacity:0; transform:scale(1.15); } }
 @keyframes ping { 0%,100% { box-shadow:0 0 0 0 transparent; } 30% { box-shadow:0 0 0 3px var(--sc), 0 0 30px -4px var(--sc); } }
@@ -1734,11 +2127,7 @@ dialog.hx[open] { animation:hxin .22s cubic-bezier(.2,.8,.2,1); }
  * =======================================================================================*/
 class LinwoodGrowLightsCard extends HTMLElement {
   setConfig(config) {
-    if (!config || !Array.isArray(config.lights) || !config.lights.length) throw new Error('Set "lights" to a list of grow lights');
-    config.lights.forEach((l) => {
-      if (l && Array.isArray(l.bars)) { if (!l.bars.length || l.bars.some((b) => !b || !b.entity || !b.id)) throw new Error('Each bar in "bars" needs an "id" and an "entity"'); }
-      else if (!l || !l.entity) throw new Error('Each light needs an "entity" (or "bars")');
-    });
+    lpcCheckLights(config && config.lights, 'lights');
     this._config = config; this._arm = 0; this._sig = ''; this._pend = {};
     if (!this.shadowRoot) {
       this.attachShadow({ mode: 'open' });
@@ -1776,36 +2165,19 @@ class LinwoodGrowLightsCard extends HTMLElement {
     if (act === 'toggle') {
       const l = this._config.lights[Number(el.dataset.i)];
       if (!l) return;
-      const st = lpcAnyState(this._hass, l);
-      if (st.un || st.busy) return;
-      this.dispatchEvent(new CustomEvent('haptic', { detail: 'medium', bubbles: true, composed: true }));
-      if (st.rf) {
-        // never cut an RF light's plug (that resets it to 100 % and it stops hearing the remote) — its script switches it
-        if (l.power_script) this._hass.callService('script', 'turn_on', { entity_id: l.power_script, variables: { power: st.on ? 'off' : 'on' } });
-      } else {
-        this._hass.callService(l.entity.split('.')[0], st.on ? 'turn_off' : 'turn_on', { entity_id: l.entity });
-      }
+      if (lpcToggleLight(this._hass, l)) lpcHaptic(this);
     } else if (act === 'fix') {
       this.dispatchEvent(new CustomEvent('haptic', { detail: 'medium', bubbles: true, composed: true }));
       this._hass.callService('script', 'turn_on', { entity_id: val });
     } else if (act === 'apply' || act === 'cancel') {
       const i = Number(el.dataset.i), l = this._config.lights[i];
       if (!l) return;
-      if (act === 'apply' && l.levels_script) {
-        const st = lpcGroupState(this._hass, l);
-        const variables = {};
-        st.bars.forEach((b) => { variables[b.l.id] = this._pick(i, b) || b.target || 100; });
-        this.dispatchEvent(new CustomEvent('haptic', { detail: 'medium', bubbles: true, composed: true }));
-        this._hass.callService('script', 'turn_on', { entity_id: l.levels_script, variables });
-      }
+      if (act === 'apply' && l.levels_script) { lpcHaptic(this); lpcApplyLevels(this._hass, l, (b) => this._pick(i, b)); }
       // Apply keeps the picks showing until the saved targets catch up (pruned in _paint); Cancel drops them
       if (act === 'cancel') Object.keys(this._pend).filter((k) => k.startsWith(`${i}:`)).forEach((k) => delete this._pend[k]);
       this._paint();
     } else if (act === 'master') {
-      const s = this._hass.states[val];
-      if (!s || s.state === 'unavailable') return;
-      this.dispatchEvent(new CustomEvent('haptic', { detail: 'medium', bubbles: true, composed: true }));
-      this._hass.callService(val.split('.')[0], s.state === 'on' ? 'turn_off' : 'turn_on', { entity_id: val });
+      if (lpcToggleEntity(this._hass, val)) lpcHaptic(this);
     } else if (act === 'more') {
       this.dispatchEvent(new CustomEvent('hass-more-info', { detail: { entityId: val }, bubbles: true, composed: true }));
     } else if (act === 'sched') {
@@ -1823,22 +2195,10 @@ class LinwoodGrowLightsCard extends HTMLElement {
     if (!this.shadowRoot || !this._config) return;
     const c = this._config, h = this._hass, esc = lpcEsc;
     if (!h) { LwMorph.patch(this.shadowRoot, `${this._css()}<div class="card"><div class="sk"></div></div>`); return; }
-    const ON = lpcIv(c.on_hour, 8), OFF = lpcIv(c.off_hour, 20);
-    const now = new Date(), mins = now.getHours() * 60 + now.getMinutes();
-    const inWin = mins >= ON * 60 && mins < OFF * 60;
-    const L = c.lights.map((l) => lpcAnyState(h, l));
+    const { ON, OFF, L, onN, unN, auto, head, sub, total, bl, bw, np } = lpcSchedule(h, c);
+    const hl = lpcHl;
     // a picked level that the saved target has caught up with (after Apply) is no longer pending
     L.forEach((s, i) => { if (s.group) s.bars.forEach((b) => { const k = `${i}:${b.l.id}`; if (this._pend[k] != null && this._pend[k] === b.target) delete this._pend[k]; }); });
-    const onN = L.filter((s) => s.on).length, unN = L.filter((s) => s.un).length, offN = L.length - onN;
-    const sch = c.schedule ? h.states[c.schedule] : null, auto = !sch || sch.state === 'on';
-    const hl = (x) => new Date(2000, 0, 1, x).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-    const fmt = (m) => (Math.floor(m / 60) ? `${Math.floor(m / 60)}h ` : '') + `${m % 60}m`;
-    const head = !offN ? 'Lights on' : !onN ? (unN === L.length ? 'Plugs offline' : 'Lights off') : `${onN} of ${L.length} on`;
-    let sub;
-    if (inWin) sub = !offN ? `${fmt(OFF * 60 - mins)} of light left · off at ${hl(OFF)}` : `${offN} off during scheduled hours${unN ? ' (offline)' : ' (manual)'} · off at ${hl(OFF)}`;
-    else { let u = ON * 60 - mins; if (u <= 0) u += 1440; sub = !onN ? `Resting · on at ${hl(ON)}, in ${fmt(u)}` : `${onN} on outside the schedule (manual) · on again at ${hl(ON)}`; }
-    if (!auto) sub = `Schedule paused · ${sub}`;
-    const bl = (ON / 24) * 100, bw = ((OFF - ON) / 24) * 100, np = (mins / 1440) * 100;
     const lab = (x, t, tx, cls = '') => `<span class="${cls}" style="left:${f1(x)}%;transform:translateX(-${tx}%)">${t}</span>`;
     const rows = L.map((s, i) => {
       if (s.group) return this._groupRow(s, i);
@@ -1860,7 +2220,6 @@ class LinwoodGrowLightsCard extends HTMLElement {
     const ms = c.master ? h.states[c.master] : null;
     const mOn = !!ms && ms.state === 'on', mUn = !ms || ms.state === 'unavailable';
     const master = c.master ? `<button class="ch mst${mOn ? ' on' : ''}" data-act="master" data-val="${esc(c.master)}" ${mUn ? 'disabled' : ''}><ha-icon icon="${mOn ? 'mdi:power' : 'mdi:power-off'}"></ha-icon><span><i>All grow lights</i><b>${mUn ? 'Unavailable' : mOn ? 'On · tap to turn all off' : 'Off · tap to turn all on'}</b></span><em>Same as the ${hl(ON)} / ${hl(OFF)} schedule</em></button>` : '';
-    const total = L.reduce((a, s) => a + (s.on && s.watts != null ? s.watts : 0), 0);
     const armed = Date.now() - this._arm < 4000;
     const schLabel = armed ? (auto ? 'Tap again to pause' : 'Tap again to resume') : auto ? `Auto · ${hl(ON)}–${hl(OFF)}` : 'Paused';
     LwMorph.patch(this.shadowRoot, `${this._css()}
