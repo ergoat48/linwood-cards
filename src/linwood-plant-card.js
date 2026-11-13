@@ -1,4 +1,5 @@
-/* Linwood Plant Card v4.0.0 — illustrated plant-care tracker for the Plant Care page.
+/* Linwood Plant Card v4.0.1 — illustrated plant-care tracker for the Plant Care page.
+ * v4.0.1: tiles keep their natural height in the carousel; shorter "d ago" wording.
  * v4.0.0: one full-width card, sized to see more without scrolling.
  *         · Grow lights live inside the card (`lights_panel:` — same keys as the Grow Lights card): schedule bar and
  *           Auto/Paused chip, one tap per light (Side light, Mantel bars), Fix when a level is wrong, and a Brightness
@@ -965,7 +966,7 @@ class LinwoodPlantCard extends HTMLElement {
   _esc(s) { return lpcEsc(s); }
   _span(d) { return d >= 14 && d % 7 === 0 ? `${d / 7} wk` : `${d} d`; }
   _date(d) { return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); }
-  _ago(since, last) { return since <= 0 ? 'today' : since === 1 ? 'yesterday' : since < 14 ? `${since} days ago` : this._date(last); }
+  _ago(since, last) { return since <= 0 ? 'today' : since === 1 ? 'yesterday' : since < 14 ? `${since} d ago` : this._date(last); }
   _typ(n) { return n == null ? '—' : Number.isInteger(n) ? String(n) : `${Math.floor(n)}½`; }
   _range(season) {
     const g = this._grow; if (!g.length) return '';
@@ -1082,7 +1083,7 @@ class LinwoodPlantCard extends HTMLElement {
     let head, meta;
     if (w.status === 'missing') { head = 'Helper missing'; meta = `${w.w.log} isn’t in Home Assistant`; }
     else if (w.status === 'unlogged') { head = 'Log the first watering'; meta = 'Water when the soil is dry, then tap Watered — it learns how long this pot takes to dry out.'; }
-    else if (w.status === 'checked') { head = `Still moist · recheck ${this._date(w.recheckOn)}`; meta = `Soil checked ${this._ago(lpcGap(w.ckKey, w.today), lpcDayOf(w.ckKey))} · watered ${ago}`; }
+    else if (w.status === 'checked') { head = `Still moist · recheck ${this._date(w.recheckOn)}`; meta = `Checked ${this._ago(lpcGap(w.ckKey, w.today), lpcDayOf(w.ckKey))} · watered ${ago}`; }
     else if (w.status === 'ok') {
       head = w.left == null ? `Watered ${ago}` : w.left === 1 ? 'Check the soil tomorrow' : `Check the soil in ${w.left} d`;
       meta = w.learning
@@ -1818,7 +1819,7 @@ ha-icon { --mdc-icon-size:16px; display:inline-flex; flex:none; }
 .arr button:disabled { opacity:.3; }
 .arr ha-icon { --mdc-icon-size:20px; }
 @media (hover:none) { .arr { display:none; } }
-.rail { position:relative; display:grid; grid-auto-flow:column; grid-auto-columns:calc((100% - 36px) / 4.25); gap:12px; align-items:stretch; overflow-x:auto; overflow-y:hidden; scroll-snap-type:x mandatory; scroll-padding-left:0; overscroll-behavior-x:contain; -webkit-overflow-scrolling:touch; padding-bottom:8px; scrollbar-width:thin; scrollbar-color:rgba(255,255,255,0.14) transparent; }
+.rail { position:relative; display:grid; grid-auto-flow:column; grid-auto-columns:calc((100% - 36px) / 4.25); gap:12px; align-items:start; overflow-x:auto; overflow-y:hidden; scroll-snap-type:x mandatory; scroll-padding-left:0; overscroll-behavior-x:contain; -webkit-overflow-scrolling:touch; padding-bottom:8px; scrollbar-width:thin; scrollbar-color:rgba(255,255,255,0.14) transparent; }
 .rail::-webkit-scrollbar { height:6px; } .rail::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.14); border-radius:3px; } .rail::-webkit-scrollbar-track { background:transparent; }
 /* ---- plant tile ---- */
 .tile { position:relative; display:flex; flex-direction:column; min-width:0; scroll-snap-align:start; border-radius:18px; overflow:hidden; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.06); transition:border-color .3s, box-shadow .3s; }
@@ -1840,8 +1841,7 @@ ha-icon { --mdc-icon-size:16px; display:inline-flex; flex:none; }
 .pill.where { right:8px; color:#cbd5e1; font-weight:600; }
 .pill.where ha-icon { --mdc-icon-size:13px; color:#9aa0aa; }
 .art.lit.on .pill.where { color:#fde68a; border-color:rgba(253,230,138,.35); } .art.lit.on .pill.where ha-icon { color:#f5b83d; }
-.body { flex:1; display:flex; flex-direction:column; gap:9px; padding:10px 11px 11px; }
-.body > .foot { margin-top:auto; }
+.body { display:flex; flex-direction:column; gap:9px; padding:10px 11px 11px; }
 .head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
 .nm { min-width:0; display:flex; flex-direction:column; gap:1px; }
 h3 { margin:0; font-size:16px; font-weight:700; letter-spacing:-.01em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
