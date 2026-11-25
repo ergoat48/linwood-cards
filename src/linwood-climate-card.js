@@ -1,4 +1,9 @@
-/* Linwood Climate Card v1.19.0 — custom dial thermostat for Home Assistant
+/* Linwood Climate Card v1.20.0 — custom dial thermostat for Home Assistant
+ * v1.20.0: temperature holds show right away. The ecobee cloud (`hold:`) polls every ~3 min, so a hold set at the
+ *         thermostat, in the ecobee app or in Apple Home used to read "Schedule · Home" until the next poll. Now, when
+ *         the local `entity` targets a different setpoint than the cloud's comfort while the `comfort:` select still
+ *         reports that comfort, the Comfort tile reads HOLD with the held temperature. Any hold (temperature, Sleep,
+ *         Away, ...) also shows as a "Hold · 70°" chip on the collapsed Controls bar.
  * v1.19.0: the Target / Mode / Fan / Comfort tiles and the Auto Home/Away / Sleep / Air Mixing / Fresh Air rows now live
  *         in a collapsible "Controls" section under the dial, collapsed by default. The bar shows how many automations are
  *         on (and "Fan running" while Air Mixing / Fresh Air is running the blower); tapping it opens or closes the section,
@@ -296,10 +301,25 @@ class LinwoodClimateCard extends HTMLElement {
     const eco = this._ecobeeHold(), hs = eco && this._st(eco);
     if (!hs || hs.state === 'unavailable') return null;
     const sched = hs.attributes.climate_mode || '', pm = String(hs.attributes.preset_mode || '').toLowerCase();
-    const hold = pm && pm !== 'none' && pm !== sched.toLowerCase() ? pm : null;
+    let hold = pm && pm !== 'none' && pm !== sched.toLowerCase() ? pm : null;
     const pms = (hs.attributes.preset_modes || []).map((p) => String(p).toLowerCase());
     const opts = Object.keys(LCC_COMFORT).filter((k) => pms.includes(k));
+    // The cloud only polls every ~3 min. A temperature hold set at the thermostat, in the ecobee app or in Apple Home
+    // reaches the local (HomeKit) entity in seconds, so: same comfort, different setpoint = a temperature hold now.
+    if (pm !== 'temp' && this._liveTempHold(hs, hold || sched.toLowerCase())) hold = 'temp';
     return { eco, sched, hold, opts };
+  }
+  /* true when the local `entity` targets a different setpoint than the cloud's comfort `ck` while the local comfort
+   * select (`comfort:`) still reports that same comfort — i.e. a temperature hold the cloud hasn't caught up with yet.
+   * A schedule change moves the select too, so it isn't mistaken for a hold. Needs `comfort:`; Away is never judged. */
+  _liveTempHold(hs, ck) {
+    const st = this._st(this._config.entity), cf = this._st(this._config.comfort);
+    if (!st || !cf || ck === 'away' || ck === 'away_indefinitely') return false;
+    if (String(cf.state).toLowerCase() !== ck) return false;
+    const a = st.attributes, c = hs.attributes;
+    const diff = (x, y) => x != null && y != null && isFinite(x) && isFinite(y) && Math.abs(Number(x) - Number(y)) >= 0.5;
+    if (this._dual(st)) return diff(a.target_temp_low, c.target_temp_low) || diff(a.target_temp_high, c.target_temp_high);
+    return diff(a.temperature, c.temperature);
   }
   _setComfort(opt) {
     const lab = (LCC_COMFORT[opt] || {}).label || this._cap(opt);
@@ -517,7 +537,7 @@ class LinwoodClimateCard extends HTMLElement {
     ['auto_away', 'auto_sleep', 'auto_mix', 'auto_air'].forEach((k) => { const rc = this._rowCfg(k) || {}; ids.push(rc.entity, rc.active, rc.distance, rc.lead, rc.spread, rc.paused, rc.co2, rc.voc); });
     ids.push(c.heat_alert);
     const hd = this._st(c.hold);
-    parts.push(hd ? String(hd.attributes.preset_mode) : '-');
+    parts.push(hd ? [hd.attributes.preset_mode, hd.attributes.climate_mode, hd.attributes.temperature, hd.attributes.target_temp_low, hd.attributes.target_temp_high].join('|') : '-');
     const tg = this._st(c.targeting);
     parts.push(tg ? tg.state + '|' + JSON.stringify(tg.attributes.active_sensors || null) : '-');
     ids.forEach((id) => {
@@ -772,9 +792,16 @@ class LinwoodClimateCard extends HTMLElement {
       const autos = [aa, sl, am, ar].filter(Boolean);
       const onCount = autos.filter((r) => r.on).length;
       const fanRun = [am, ar].some((r) => r && r.on && r.active);
-      const summary = fanRun
+      // a hold shows on the bar too, so it isn't hidden behind the collapsed Comfort tile
+      let holdChip = '';
+      if (cs && cs.hold) {
+        const hk = cs.hold === 'away_indefinitely' ? 'away' : cs.hold, hl = LCC_COMFORT[hk];
+        const hv = hl ? hl.label : cs.hold === 'temp' ? (off ? '' : targetTxt) : this._cap(cs.hold);
+        holdChip = `<span class="ctlh"><ha-icon icon="${hl ? hl.icon : 'mdi:hand-back-right-outline'}"></ha-icon>Hold${hv ? ' · ' + lccEsc(hv) : ''}</span>`;
+      }
+      const summary = holdChip + (fanRun
         ? '<ha-icon icon="mdi:fan" class="spin"></ha-icon><span>Fan running</span>'
-        : autos.length ? `<span>${onCount} of ${autos.length} automations on</span>` : '';
+        : autos.length ? `<span class="ctlc">${onCount} of ${autos.length} automations on</span>` : '');
       controls = `<div class="ctlwrap${open ? ' open' : ''}">
     <button class="ctlbar" data-act="ctl" aria-expanded="${open}" aria-controls="lccctl" aria-label="Controls">
       <span class="ctlt">CONTROLS</span>
@@ -1331,6 +1358,9 @@ ha-icon { --mdc-icon-size:18px; display:inline-flex; }
 .ctlt { flex:none; font-size:11px; letter-spacing:.12em; font-weight:600; color:#8b919c; }
 .ctls { flex:1; min-width:0; display:flex; align-items:center; justify-content:flex-end; gap:6px; font-size:12px; color:#8b919c; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .ctls.run { color:#5eead4; }
+.ctlh { flex:none; display:inline-flex; align-items:center; gap:4px; padding:2px 8px; border-radius:8px; font-weight:700; color:#f3f4f6; background:color-mix(in srgb, var(--c2) 22%, transparent); border:1px solid color-mix(in srgb, var(--c2) 45%, transparent); }
+.ctlh ha-icon { --mdc-icon-size:13px; color:var(--c2); }
+@container lccard (max-width: 360px) { .ctlh ~ .ctlc { display:none; } }
 .ctls ha-icon { --mdc-icon-size:15px; flex:none; }
 .ctls ha-icon.spin { animation:spin 2.4s linear infinite; }
 .ctlchev { flex:none; --mdc-icon-size:20px; color:#9aa0aa; transition:transform .25s; }
